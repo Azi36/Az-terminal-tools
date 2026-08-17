@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Az-term · SSH / SFTP 终端工具</title>
-  <meta name="description" content="Az-term 桌面 SSH 终端工具：终端 / SFTP 双栏 / 端口转发 / 跳板机，免费无账号不过期。Windows 与 macOS。">
+  <title>AzTerm · SSH / SFTP 终端工具</title>
+  <meta name="description" content="AzTerm 桌面 SSH 终端工具：终端 / SFTP 双栏 / 端口转发 / 跳板机，免费无账号不过期。Windows 与 macOS。">
   <link rel="canonical" href="https://term.azi36.com/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Azi36">
-  <meta property="og:title" content="Az-term · SSH / SFTP 终端工具">
+  <meta property="og:title" content="AzTerm · SSH / SFTP 终端工具">
   <meta property="og:description" content="连服务器这件事，本来就不该要账号。">
   <meta property="og:url" content="https://term.azi36.com/">
   <meta property="og:image" content="https://azi36.com/assets/img/og.png">
@@ -77,26 +77,42 @@
     .dl-btn small { opacity: .72; font-size: 12px; }
     .dl-note { color: var(--text-3); font-size: 12.5px; margin: 6px 0 0; line-height: 1.8; }
 
+    /* 右边那个窗口是这页的主角（还能点），比主站默认的 .9fr 再给宽一点。
+       必须关在 min-width 里：主站的「900 以下变单栏」写在前面，
+       裸写一条同特异度的规则会连那条一起盖掉，窄屏就永远是双栏。 */
+    @media (min-width: 901px) {
+      .hero-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr); gap: 44px; }
+    }
+
     /* —— 功能：左边一列卡片，右边一张大图，自动轮播 ——
        原来五段「文字 + 图」交替往下排，读到第三段就累了。
        改成同一块地方换内容：想看哪个点哪个，不点就自己轮。 */
-    /* stretch 而不是 start：右边那张图拉到跟左边卡片列一样高，
-       不然图底下会空出一大块，看着像没做完 */
-    .feat { display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr); gap: 30px; align-items: stretch; margin-top: 30px; }
-    .feat-list { display: grid; gap: 10px; }
+    /* 高度以右边那张图为准（start，不是 stretch）。
+       之前是反过来：图去够五张卡片摞起来的高度，一千来像素，
+       底下三分之二全是空黑，卡片也跟着摊成一大片。 */
+    .feat { display: grid; grid-template-columns: minmax(0, 286px) minmax(0, 1fr); gap: 22px; align-items: start; margin-top: 22px; }
+    .feat-list { display: grid; gap: 7px; align-content: start; min-height: 272px; }
     .feat-card {
       position: relative; overflow: hidden;
-      display: grid; gap: 5px; padding: 15px 17px 16px;
-      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      display: grid; grid-template-columns: auto minmax(0, 1fr);
+      align-items: center; gap: 0 9px; padding: 9px 13px 10px;
+      border: 1px solid var(--border); border-radius: var(--radius);
       background: var(--bg); color: inherit; text-align: left; cursor: pointer;
       font: inherit; transition: border-color .2s var(--ease), background .2s var(--ease);
     }
     .feat-card:hover { border-color: var(--text-3); }
     .feat-card.on { border-color: var(--brand); background: var(--brand-light); }
-    .feat-card b { font-size: 15px; line-height: 1.4; }
-    .feat-card small { color: var(--text-3); font-size: 12.5px; line-height: 1.65; }
+    .feat-card b { font-size: 14px; font-weight: 600; line-height: 1.5; }
+    /* 说明只给当前这张看：五段一起铺开，左边就比右边高出一大截，
+       也就是上面那个「图去够卡片」的病根 */
+    .feat-card small {
+      grid-column: 1 / -1; overflow: hidden; max-height: 0; opacity: 0;
+      color: var(--text-3); font-size: 12.5px; line-height: 1.65;
+      transition: max-height .3s var(--ease), opacity .25s var(--ease), margin-top .3s var(--ease);
+    }
+    .feat-card.on small { max-height: 60px; opacity: 1; margin-top: 3px; }
     .feat-card .feat-tag {
-      justify-self: start; padding: 1px 9px; border-radius: 999px;
+      padding: 1px 8px; border-radius: 999px;
       background: var(--bg-hover); color: var(--text-3); font-size: 11px; font-weight: 700;
     }
     .feat-card.on .feat-tag { background: var(--brand); color: #fff; }
@@ -109,8 +125,9 @@
     .feat.paused .feat-card.on i { animation-play-state: paused; }
     @keyframes feat-tick { from { width: 0; } to { width: 100%; } }
 
-    /* 舞台：所有面板叠在同一个格子里，高度取最高那张，切换时不跳 */
-    .feat-stage { display: grid; }
+    /* 舞台：所有面板叠在同一个格子里，高度写死一个值，切换时不跳；
+       跟左边卡片列的 min-height 是同一个数，两栏底边对得齐 */
+    .feat-stage { display: grid; height: 272px; }
     .feat-panel {
       grid-area: 1 / 1; opacity: 0; visibility: hidden;
       transform: translateY(6px);
@@ -130,9 +147,12 @@
       .feat-panel { transition: none; }
     }
     @media (max-width: 900px) {
-      .feat { grid-template-columns: 1fr; gap: 22px; }
-      .feat-list { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+      .feat { grid-template-columns: 1fr; gap: 18px; }
+      /* 窄屏卡片横着排，高度不再需要跟右边对齐 */
+      .feat-list { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); min-height: 0; }
+      .feat-stage { height: 286px; }
     }
+    @media (max-width: 560px) { .feat-stage { height: 268px; } }
 
     /* 界面示意：纯 CSS 画的，画的是软件里真有的东西 */
     .app-shot { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-float); background: var(--bg); }
@@ -141,19 +161,105 @@
     .app-bar i:nth-child(2) { background: #febc2e; }
     .app-bar i:nth-child(3) { background: #28c840; }
     .app-bar em { margin-left: 6px; color: var(--text-3); font-size: 11.5px; font-style: normal; }
-    .app-body { display: grid; grid-template-columns: 122px 1fr; min-height: 208px; }
-    .app-side { padding: 10px; border-right: 1px solid var(--border); background: var(--bg-soft); font-size: 11.5px; }
-    .app-side b { display: block; margin-bottom: 8px; color: var(--text-3); font-size: 10.5px; letter-spacing: .06em; }
-    .app-side span { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; color: var(--text-2); }
-    .app-side span.on { background: var(--brand-light); color: var(--brand); font-weight: 600; }
+    .app-body { display: grid; grid-template-columns: 148px 1fr; min-height: 330px; }
+    .app-side { padding: 11px 10px; border-right: 1px solid var(--border); background: var(--bg-soft); font-size: 12.5px; }
+    .app-side b { display: block; margin-bottom: 8px; padding-left: 6px; color: var(--text-3); font-size: 10.5px; letter-spacing: .06em; }
+    /* 左边这几台是真能点的，所以是 button 不是 span */
+    .app-side button {
+      width: 100%; display: flex; align-items: center; gap: 7px;
+      padding: 6px 7px; border: 0; border-radius: 6px; background: none;
+      font: inherit; color: var(--text-2); text-align: left;
+      transition: background .18s var(--ease), color .18s var(--ease);
+    }
+    .app-side button:hover { background: var(--bg-hover); color: var(--text); }
+    .app-side button.on { background: var(--brand-light); color: var(--brand); font-weight: 600; }
     .app-side em { width: 7px; height: 7px; border-radius: 50%; background: #28c840; flex: none; }
     .app-side em.off { background: var(--text-3); }
     .app-main { display: flex; flex-direction: column; min-width: 0; }
-    .app-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); background: var(--bg-soft); font-size: 11.5px; }
-    .app-tabs span { padding: 5px 10px; border-radius: 6px 6px 0 0; color: var(--text-3); }
-    .app-tabs span.on { background: var(--bg); color: var(--brand); font-weight: 600; box-shadow: inset 0 -2px 0 var(--brand); }
-    .app-pane { flex: 1; padding: 14px 16px; background: #1d1e22; color: #e9e9ec; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.95; overflow: hidden; }
-    .app-pane .p { color: #4f6cf0; } .app-pane .ok { color: #28c840; } .app-pane .dim { color: #71717a; } .app-pane .warn { color: #e2b93d; }
+    .app-tabs { display: flex; gap: 2px; padding: 7px 8px 0; border-bottom: 1px solid var(--border); background: var(--bg-soft); font-size: 12.5px; }
+    .app-tabs button {
+      padding: 6px 12px; border: 0; border-radius: 6px 6px 0 0; background: none;
+      font: inherit; color: var(--text-3);
+      transition: background .18s var(--ease), color .18s var(--ease);
+    }
+    .app-tabs button:hover { color: var(--text-2); background: var(--bg-hover); }
+    .app-tabs button.on { background: var(--bg); color: var(--brand); font-weight: 600; box-shadow: inset 0 -2px 0 var(--brand); }
+    /* 键盘也要看得见自己在哪 */
+    .app-side button:focus-visible, .app-tabs button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+    /* 四个标签页叠在同一格里，切换时窗口大小不动 */
+    .app-stage { flex: 1; display: grid; min-width: 0; }
+    .app-tp {
+      grid-area: 1 / 1; display: flex; min-width: 0;
+      opacity: 0; visibility: hidden;
+      transition: opacity .24s var(--ease), visibility .24s;
+    }
+    .app-tp.on { opacity: 1; visibility: visible; }
+    .app-tp > * { flex: 1; min-width: 0; }
+    .app-pane { flex: 1; padding: 15px 17px; background: #1d1e22; color: #e9e9ec; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px; line-height: 1.95; overflow: hidden; }
+    .app-pane .p { color: #7d95ff; } .app-pane .ok { color: #28c840; } .app-pane .dim { color: #71717a; } .app-pane .warn { color: #e2b93d; }
+    /* 深色下页面底色本来就近黑，终端再用 #1d1e22 就跟窗口边框糊在一起了，
+       压深一档，让「这块是终端」这件事在两种主题下都一眼看得出。
+       （这一对要逐行一致，跟主站的做法一样） */
+    :root[data-theme="dark"] .app-pane { background: #0c0d12; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) .app-pane { background: #0c0d12; }
+    }
+
+    /* 配置页那种「标签 + 值」的行 */
+    .app-pane .kv { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; }
+    .app-pane .kv i { font-style: normal; color: #71717a; }
+    /* 光标：只闪它一个 */
+    .app-pane .cur { display: inline-block; width: 7px; height: 13px; vertical-align: -2px; background: #9aa0ad; animation: cur-blink 1.15s steps(1) infinite; }
+    @keyframes cur-blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+
+    /* 窗口下面那句提示：不写没人知道这窗口能点 */
+    .shot-hint { margin: 10px 2px 0; color: var(--text-3); font-size: 12.5px; }
+
+    /* 窄屏：机器列表横过来排一行，终端别再被挤成一条 */
+    @media (max-width: 620px) {
+      .app-body { grid-template-columns: 1fr; min-height: 0; }
+      .app-side { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 9px; border-right: 0; border-bottom: 1px solid var(--border); }
+      .app-side b { margin: 0 4px 0 0; padding: 0; }
+      .app-side button { width: auto; padding: 4px 9px; border-radius: 999px; }
+      .app-stage { min-height: 250px; }
+      .app-pane { font-size: 11.5px; padding: 12px 13px; }
+      .app-pane .kv { grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+    }
+
+    /* —— 终端逐行打出来 ——
+       一条从左往右的擦除，steps 让它一格一格走，像光标在推。
+       行与行错开出场，读起来就是「命令刚敲完、结果正在回」。 */
+    @keyframes term-line { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+    .app-pane > div { animation: term-line .32s steps(20, end) both; }
+    .app-pane > div:nth-child(1) { animation-delay: .08s; }
+    .app-pane > div:nth-child(2) { animation-delay: .24s; }
+    .app-pane > div:nth-child(3) { animation-delay: .40s; }
+    .app-pane > div:nth-child(4) { animation-delay: .56s; }
+    .app-pane > div:nth-child(5) { animation-delay: .72s; }
+    .app-pane > div:nth-child(6) { animation-delay: .88s; }
+    .app-pane > div:nth-child(7) { animation-delay: 1.04s; }
+    .app-pane > div:nth-child(8) { animation-delay: 1.20s; }
+    /* 没轮到的面板先按住，轮到了才开演（暂停会把 delay 一起冻住） */
+    .app-tp .app-pane > div, .feat-panel .app-pane > div { animation-play-state: paused; }
+    .app-tp.on .app-pane > div, .feat-panel.on .app-pane > div { animation-play-state: running; }
+    /* 文件面板：一行行冒出来，进度条跟着往前走 */
+    @keyframes fs-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    @keyframes fs-fill { from { width: 0; } to { width: 62%; } }
+    .fs-side div { animation: fs-in .3s var(--ease) both; }
+    .fs-side div:nth-child(2) { animation-delay: .10s; }
+    .fs-side div:nth-child(3) { animation-delay: .22s; }
+    .fs-side div:nth-child(4) { animation-delay: .34s; }
+    .fs-side div:nth-child(5) { animation-delay: .46s; }
+    .fs-side div:nth-child(6) { animation-delay: .58s; }
+    .fs-bar i b { animation: fs-fill 2.4s var(--ease) .7s both; }
+    .app-tp .fs-side div, .app-tp .fs-bar i b,
+    .feat-panel .fs-side div, .feat-panel .fs-bar i b { animation-play-state: paused; }
+    .app-tp.on .fs-side div, .app-tp.on .fs-bar i b,
+    .feat-panel.on .fs-side div, .feat-panel.on .fs-bar i b { animation-play-state: running; }
+    @media (prefers-reduced-motion: reduce) {
+      .app-pane > div, .fs-side div, .fs-bar i b { animation: none !important; }
+      .app-pane .cur { animation: none; }
+    }
     /* 双栏文件面板的示意 */
     .fs-shot { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); font-size: 11.5px; }
     .fs-side { background: var(--bg); padding: 10px 12px; min-width: 0; }
@@ -181,10 +287,28 @@
     }
     .table-wrap th { background: var(--bg-soft); font-weight: 600; }
 
-    /* 四张卡排 2×2。主站的 auto-fit 在这个宽度只放得下 3 列，
-       第四张会孤零零落到第二行，不好看 */
-    #trust .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    @media (max-width: 720px) { #trust .feature-grid { grid-template-columns: 1fr; } }
+    /* 凭据条：四格一行，一条横过去。跟功能区那种大块面拉开，
+       它只是「先把话说清楚」，不该抢戏 */
+    .trust {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 16px; overflow: hidden;
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--bg); box-shadow: var(--shadow-card);
+    }
+    .trust > div { padding: 14px 16px 15px; border-left: 1px solid var(--border-light); }
+    .trust > div:first-child { border-left: 0; }
+    .trust b { display: block; margin-bottom: 3px; font-size: 13.5px; font-weight: 600; }
+    .trust small { color: var(--text-3); font-size: 12px; line-height: 1.6; }
+    @media (max-width: 820px) {
+      .trust { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .trust > div:nth-child(odd) { border-left: 0; }
+      .trust > div:nth-child(n + 3) { border-top: 1px solid var(--border-light); }
+    }
+    @media (max-width: 520px) {
+      .trust { grid-template-columns: 1fr; }
+      .trust > div { border-left: 0; }
+      .trust > div + div { border-top: 1px solid var(--border-light); }
+    }
 
   </style>
 </head>
@@ -212,7 +336,7 @@
             <path class="lm-fill" d="M14 39h8" fill="none" stroke="#ffb02e" stroke-width="3" stroke-linecap="round"/>
           </svg>
         </span>
-        <span class="brand-name">Az<b>-term</b></span>
+        <span class="brand-name">Az<b>Term</b></span>
       </a>
       <div class="nav-side">
         <button class="theme-toggle" type="button" aria-label="切换深浅色" title="切换深浅色">
@@ -230,7 +354,7 @@
     <section class="hero hero-split">
       <div class="hero-text">
         <div class="kicker">PRODUCT № 002 · 桌面工具 · 免费开源</div>
-        <h1><span class="grad-text">Az-term</span></h1>
+        <h1><span class="grad-text">AzTerm</span></h1>
         <p class="hero-tagline">连服务器这件事，本来就不该要账号。</p>
         <p class="quote-line">
           终端、文件、端口转发、跳板机，全在一个窗口里。别人锁在订阅后面的，这儿一样不少。
@@ -250,28 +374,103 @@
       </div>
 
       <div class="hero-visual">
-        <div class="app-shot">
-          <div class="app-bar"><i></i><i></i><i></i><em>Azi-Terminal</em></div>
+        <!-- 这个窗口不是图：左边换机器、上面换标签，都是真能点的 -->
+        <div class="app-shot" id="shot">
+          <div class="app-bar"><i></i><i></i><i></i><em id="shotTitle">生产机 · 终端</em></div>
           <div class="app-body">
             <div class="app-side">
               <b>服务器</b>
-              <span class="on"><em></em>生产机</span>
-              <span><em class="off"></em>测试机</span>
-              <span><em class="off"></em>NAS</span>
+              <button type="button" class="on" data-user="root@prod" data-host="prod.internal" data-name="生产机"><em></em>生产机</button>
+              <button type="button" data-user="deploy@test" data-host="test.internal" data-name="测试机"><em class="off"></em>测试机</button>
+              <button type="button" data-user="admin@nas" data-host="nas.local" data-name="NAS"><em class="off"></em>NAS</button>
             </div>
             <div class="app-main">
-              <div class="app-tabs"><span class="on">终端</span><span>文件</span><span>隧道</span><span>配置</span></div>
-              <div class="app-pane">
-                <div><span class="p">root@server</span>:<span class="dim">~</span># uptime</div>
-                <div class="dim"> 15:04 up 96 days, load average: 0.08</div>
-                <div><span class="p">root@server</span>:<span class="dim">~</span># <span class="warn">nginx -t</span></div>
-                <div><span class="ok">✓</span> configuration file test is successful</div>
-                <div class="dim">↑ 从指令库点出来的，没手打</div>
+              <div class="app-tabs" role="tablist" aria-label="窗口标签">
+                <button type="button" role="tab" class="on" aria-selected="true" aria-controls="tp0">终端</button>
+                <button type="button" role="tab" aria-selected="false" aria-controls="tp1">文件</button>
+                <button type="button" role="tab" aria-selected="false" aria-controls="tp2">隧道</button>
+                <button type="button" role="tab" aria-selected="false" aria-controls="tp3">配置</button>
+              </div>
+
+              <div class="app-stage">
+                <div class="app-tp on" role="tabpanel" id="tp0">
+                  <div class="app-pane">
+                    <div><span class="p u">root@prod</span>:<span class="dim">~</span># docker ps -a</div>
+                    <div class="dim">CONTAINER   IMAGE          STATUS</div>
+                    <div>a1c9f2e3    nginx:alpine   <span class="ok">Up 12 days</span></div>
+                    <div>77b0d41a    redis:7        <span class="warn">Exited (0)</span></div>
+                    <div><span class="p u">root@prod</span>:<span class="dim">~</span># nginx -t</div>
+                    <div><span class="ok">✓</span> configuration file test is successful</div>
+                    <div class="dim">↑ 从指令库点出来的，没手打</div>
+                    <div><span class="p u">root@prod</span>:<span class="dim">~</span># <b class="cur"></b></div>
+                  </div>
+                </div>
+
+                <div class="app-tp" role="tabpanel" id="tp1">
+                  <div class="fs-shot">
+                    <div class="fs-side">
+                      <b>本地 · D:\deploy</b>
+                      <div class="sel"><span>app.tar.gz</span><small>18 MB</small></div>
+                      <div><span>docker-compose.yml</span><small>1 KB</small></div>
+                      <div><span>.env.example</span><small>320 B</small></div>
+                      <div><span>README.md</span><small>2 KB</small></div>
+                    </div>
+                    <div class="fs-side">
+                      <b>远程 · /srv/app</b>
+                      <div><span>current/</span><small>目录</small></div>
+                      <div><span>logs/</span><small>目录</small></div>
+                      <div><span>docker-compose.yml</span><small>1 KB</small></div>
+                      <div><span>.env</span><small>412 B</small></div>
+                    </div>
+                    <div class="fs-bar">
+                      <span>↑ app.tar.gz</span><i><b></b></i><span>11 / 18 MB · 2.4 MB/s</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="app-tp" role="tabpanel" id="tp2">
+                  <div class="app-pane">
+                    <div class="dim">下面这些都挂在同一条连接上</div>
+                    <div><span class="ok">●</span> 跳板机 <span class="dim">bastion.internal → <b class="h">prod.internal</b></span></div>
+                    <div><span class="ok">●</span> 本地转发 <span class="dim">-L</span></div>
+                    <div class="dim">  127.0.0.1:5432 → db.internal:5432</div>
+                    <div><span class="ok">●</span> 动态代理 <span class="dim">-D　socks5://127.0.0.1:1080</span></div>
+                    <div class="dim">○ 远程转发 -R · 没开</div>
+                    <div class="dim">断开会话时全部自动收掉</div>
+                  </div>
+                </div>
+
+                <div class="app-tp" role="tabpanel" id="tp3">
+                  <div class="app-pane">
+                    <div class="kv"><i>主机</i><span><b class="h">prod.internal</b> <span class="dim">:22</span></span></div>
+                    <div class="kv"><i>认证</i><span>密钥 <span class="dim">~/.ssh/id_ed25519</span> · 2FA</span></div>
+                    <div class="kv"><i>密码</i><span><span class="ok">✓</span> 存在系统钥匙串<span class="dim">，不在配置里</span></span></div>
+                    <div class="kv"><i>指纹</i><span class="dim">SHA256:9f2c… 已记进 known_hosts</span></div>
+                    <div class="kv"><i>编码</i><span class="dim">UTF-8 · 行尾 LF</span></div>
+                    <div class="kv"><i>掉线</i><span class="dim">30 秒心跳，断了自己接回来</span></div>
+                    <div class="dim">改完这一页，下次连就照这个来</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
+        <p class="shot-hint">↑ 这窗口能点，左边换台机器、上面换个标签试试</p>
       </div>
+    </section>
+
+    <!-- ===== 凭据条 =====
+         原来在页面中段、四张大卡片。位置不对：人是先决定信不信，
+         再看功能的。所以提到功能前面，压成紧跟 Hero 的一条。 -->
+    <section id="trust">
+      <div class="md-title"><span>##</span>你的密码，我拿不到</div>
+      <div class="trust">
+        <div><b>🔐 密码交给系统管</b><small>Windows 凭据管理器、macOS 钥匙串。我自己的配置文件里一个明文都没有</small></div>
+        <div><b>🔑 私钥只记个路径</b><small>内容要连的时候才读，不落盘，也不写进日志</small></div>
+        <div><b>🖐️ 指纹用 known_hosts</b><small>跟系统 ssh 共用一份。头回连自动记下，变了才拦你</small></div>
+        <div><b>🚫 流量不过我这儿</b><small>你的电脑直连你的服务器。所以它才能一直免费</small></div>
+      </div>
+      <p class="dl-note">全程只主动联一次网：开起来几秒后问一句有没有新版，就一个 GET，不带身份，设置里能关掉。</p>
     </section>
 
     <!-- ===== 功能 ===== -->
@@ -283,31 +482,31 @@
           <button class="feat-card on" type="button" role="tab" aria-selected="true" aria-controls="fp0" data-i="0">
             <span class="feat-tag">终端</span>
             <b>一台服务器，一个标签</b>
-            <small>终端、文件、隧道、配置在同一个标签里翻页。密码、密钥、2FA 都能登，掉线自己接回来。</small>
+            <small>终端、文件、隧道、配置都在这个标签里翻页。掉线了自己接回来。</small>
             <i></i>
           </button>
           <button class="feat-card" type="button" role="tab" aria-selected="false" aria-controls="fp1" data-i="1">
             <span class="feat-tag">文件</span>
             <b>传一半断了，接着传</b>
-            <small>左本地右远程，走终端那条连接的子通道。重名先问你：覆盖 / 跳过 / 续传。</small>
+            <small>左边本地右边远程。撞上重名先问你一句，要覆盖还是接着传。</small>
             <i></i>
           </button>
           <button class="feat-card" type="button" role="tab" aria-selected="false" aria-controls="fp2" data-i="2">
             <span class="feat-tag">编辑</span>
             <b>远程配置文件，点开就改</b>
-            <small>Ctrl+S 直接写回原路径，不落临时文件。GBK 的按 GBK 存，CRLF 还它 CRLF。</small>
+            <small>Ctrl+S 直接写回原来那个路径，不落临时文件。GBK 还它 GBK。</small>
             <i></i>
           </button>
           <button class="feat-card" type="button" role="tab" aria-selected="false" aria-controls="fp3" data-i="3">
             <span class="feat-tag">隧道</span>
             <b>内网的东西，本机直接连</b>
-            <small>端口转发和 SOCKS 代理，走那条已认证的连接。跳板机也在这儿。</small>
+            <small>端口转发和 SOCKS 代理都挂在这条连接上，跳板机也在这儿。</small>
             <i></i>
           </button>
           <button class="feat-card" type="button" role="tab" aria-selected="false" aria-controls="fp4" data-i="4">
             <span class="feat-tag">效率</span>
             <b>不用再狂按方向键翻历史</b>
-            <small>常敲的命令存一次，点一下填进终端。开箱 45 条预设，还带个备忘录。</small>
+            <small>常敲的命令存一次，以后点一下就填进终端。开箱带 45 条。</small>
             <i></i>
           </button>
         </div>
@@ -315,15 +514,15 @@
         <div class="feat-stage">
           <div class="feat-panel on" id="fp0" role="tabpanel">
             <div class="app-shot">
-              <div class="app-bar"><i></i><i></i><i></i><em>终端</em></div>
-              <div class="app-pane" style="min-height:268px">
-                <div><span class="p">root@server</span>:<span class="dim">~</span># docker ps -a</div>
-                <div class="dim">CONTAINER   IMAGE          STATUS</div>
-                <div>a1c9f2e3    nginx:alpine   <span class="ok">Up 12 days</span></div>
-                <div>77b0d41a    redis:7        <span class="warn">Exited (0)</span></div>
-                <div><span class="p">root@server</span>:<span class="dim">~</span># uptime</div>
-                <div class="dim"> 15:04 up 96 days, load average: 0.08</div>
-                <div><span class="p">root@server</span>:<span class="dim">~</span># <span class="dim">▎</span></div>
+              <div class="app-bar"><i></i><i></i><i></i><em>生产机 · 终端</em></div>
+              <div class="app-pane">
+                <div><span class="p">root@server</span>:<span class="dim">~</span># tail -f /var/log/app.log</div>
+                <div class="dim">14:22:07  worker 起来了</div>
+                <div class="dim">14:22:19  收工单 3 条</div>
+                <div><span class="warn">⚠</span> 网断了 <span class="dim">· 正在重连…</span></div>
+                <div><span class="ok">✓</span> 接回来了 <span class="dim">· 还是这个标签，日志接着往下滚</span></div>
+                <div class="dim">14:25:41  收工单 1 条</div>
+                <div><span class="p">root@server</span>:<span class="dim">~</span># <b class="cur"></b></div>
               </div>
             </div>
           </div>
@@ -349,7 +548,7 @@
                   <div><span>.env</span><small>412 B</small></div>
                 </div>
                 <div class="fs-bar">
-                  <span>↑ app.tar.gz</span><i><b></b></i><span>11 / 18 MB · 2.4 MB/s · 剩 3 秒</span>
+                  <span>↑ app.tar.gz</span><i><b></b></i><span>断点续传 · 11 / 18 MB</span>
                 </div>
               </div>
             </div>
@@ -358,7 +557,7 @@
           <div class="feat-panel" id="fp2" role="tabpanel">
             <div class="app-shot">
               <div class="app-bar"><i></i><i></i><i></i><em>nginx.conf · 远程 · rw-r--r-- · GBK</em></div>
-              <div class="app-pane" style="min-height:268px">
+              <div class="app-pane">
                 <div><span class="dim">11</span></div>
                 <div><span class="dim">12</span>  server {</div>
                 <div><span class="dim">13</span>    listen 443 ssl;</div>
@@ -373,7 +572,7 @@
           <div class="feat-panel" id="fp3" role="tabpanel">
             <div class="app-shot">
               <div class="app-bar"><i></i><i></i><i></i><em>隧道 · 2 条开着</em></div>
-              <div class="app-pane" style="min-height:268px">
+              <div class="app-pane">
                 <div><span class="ok">●</span> 本地转发 <span class="dim">-L</span></div>
                 <div class="dim">  127.0.0.1:5432 → db.internal:5432</div>
                 <div class="dim">  psql -h 127.0.0.1 就连上内网库了</div>
@@ -388,7 +587,7 @@
           <div class="feat-panel" id="fp4" role="tabpanel">
             <div class="app-shot">
               <div class="app-bar"><i></i><i></i><i></i><em>指令库 · 45 条预设</em></div>
-              <div class="app-pane" style="min-height:268px">
+              <div class="app-pane">
                 <div class="dim">磁盘</div>
                 <div><span class="ok">▶</span> 磁盘占用 <span class="dim">df -h</span></div>
                 <div><span class="ok">▶</span> 谁最占地方 <span class="dim">du -sh * | sort -rh</span></div>
@@ -402,46 +601,10 @@
         </div>
       </div>
     </section>
-    <!-- ===== 凭据与边界（原来分成两段，合并了） ===== -->
-    <section id="trust">
-      <div class="md-title"><span>##</span>凭据这块，说清楚</div>
-      <p class="page-desc">
-        不要账号、不传云、不过期、不锁功能 —— 这几条是设计目标，不是"暂时还没做"。
-      </p>
-      <div class="feature-grid">
-        <div class="feature">
-          <div class="feature-icon">🔐</div>
-          <h3>密码进系统钥匙串</h3>
-          <p>Windows 凭据管理器 / macOS Keychain。我们自己的配置文件里一个字节明文都没有，前端代码也拿不到。</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">🔑</div>
-          <h3>私钥只存路径</h3>
-          <p>私钥内容连接时才读，不落盘、不进日志。密码短语要不要记，你自己勾。</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">🖐️</div>
-          <h3>指纹用标准 known_hosts</h3>
-          <p>跟系统 ssh 共用一份记录。头一回连自动记下不打扰你，指纹变了才拦住报警。</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">🚫</div>
-          <h3>不经手你的流量</h3>
-          <p>你的电脑直连你的服务器，中间没有我的服务器。所以它才能一直免费。</p>
-        </div>
-      </div>
-      <p class="dl-note">
-        全程唯一一次主动联网，是开起来几秒后问一句「有没有新版」——就一个 GET，
-        不带身份、不上报任何东西，设置里能关。
-      </p>
-    </section>
-
     <!-- ===== 还差什么 ===== -->
     <section>
       <div class="md-title"><span>##</span>还差什么</div>
-      <p class="page-desc">
-        日常那部分基本齐了。老实说还差这三样，做完会写在更新说明里。
-      </p>
+      <p class="page-desc">日常够用了。下面这三样确实还没有，做完会写在更新说明里。</p>
       <div class="table-wrap">
         <table>
           <tr><th>还没做</th><th>现在能怎么办</th></tr>
@@ -455,7 +618,7 @@
     <!-- ===== 下载（平台信息并进来了） ===== -->
     <section id="download">
       <div class="md-title"><span>##</span>下载</div>
-      <p class="page-desc">安装包由 GitHub Actions 直接构建，来源可查。包体十几兆，用系统自带的 webview。</p>
+      <p class="page-desc">包是 GitHub Actions 直接构建出来的，构建记录谁都能去翻。十几兆，界面用系统自带的 webview。</p>
 
       <div class="plat-row">
         <span class="plat-chip">
@@ -480,8 +643,8 @@
         </a>
       </div>
       <p class="dl-note">
-        没做代码签名（个人证书一年好几百，暂时省了）。Windows 首次打开可能提示"未知发布者"，
-        macOS 去「系统设置 → 隐私与安全性」点一下「仍要打开」。
+        没做代码签名（个人证书一年好几百，先省了）。Windows 首次打开会提示「未知发布者」，
+        macOS 去「系统设置 → 隐私与安全性」点「仍要打开」。
       </p>
     </section>
 
@@ -517,10 +680,63 @@
       <span>© 2026 Azi36 · MIT · No Rights Reserved.</span>
       <a class="meta-top" href="#">回到顶部 ↑</a>
     </div>
-    <div class="footer-ghost" aria-hidden="true">AZ-TERM</div>
+    <div class="footer-ghost" aria-hidden="true">AZTERM</div>
   </footer>
 
 <script>
+/* ---------- Hero 里那个窗口：能点 ----------
+   上面四个标签换页，左边三台机器换连接对象（提示符、主机名、标题跟着改）。
+   动效不在这儿写：面板一挂上 .on，CSS 自己把终端一行行打出来。 */
+(function () {
+  var shot = document.getElementById('shot');
+  if (!shot) return;
+  var tabs = [].slice.call(shot.querySelectorAll('.app-tabs button'));
+  var pages = [].slice.call(shot.querySelectorAll('.app-tp'));
+  var hosts = [].slice.call(shot.querySelectorAll('.app-side button'));
+  var title = document.getElementById('shotTitle');
+  var atTab = 0, atHost = 0;
+
+  function paint() {
+    title.textContent = hosts[atHost].dataset.name + ' · ' + tabs[atTab].textContent;
+  }
+
+  function goTab(n) {
+    atTab = (n + tabs.length) % tabs.length;
+    tabs.forEach(function (t, i) {
+      t.classList.toggle('on', i === atTab);
+      t.setAttribute('aria-selected', String(i === atTab));
+    });
+    pages.forEach(function (p, i) { p.classList.toggle('on', i === atTab); });
+    paint();
+  }
+
+  function goHost(n) {
+    atHost = n;
+    hosts.forEach(function (h, i) {
+      h.classList.toggle('on', i === atHost);
+      h.querySelector('em').classList.toggle('off', i !== atHost);
+    });
+    var d = hosts[atHost].dataset;
+    // 提示符里的 user@host 和配置页里的主机名，一起换
+    [].forEach.call(shot.querySelectorAll('.u'), function (el) { el.textContent = d.user; });
+    [].forEach.call(shot.querySelectorAll('.h'), function (el) { el.textContent = d.host; });
+    paint();
+  }
+
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { goTab(i); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      goTab(e.key === 'ArrowRight' ? i + 1 : i - 1);
+      tabs[atTab].focus();
+    });
+  });
+  hosts.forEach(function (h, i) { h.addEventListener('click', function () { goHost(i); }); });
+
+  paint();
+})();
+
 /* ---------- 功能轮播 ----------
    左边点哪张，右边换哪张；不点就自己往下轮。
    鼠标停在上面、或者用户自己点过，就别再抢他的视线。 */
