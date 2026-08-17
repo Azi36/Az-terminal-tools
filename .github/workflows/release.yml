@@ -55,14 +55,17 @@ jobs:
           # 密码是生成时设的那串（这把私钥是加密的，密码不能留空）。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # —— macOS 代码签名 + 公证 ——
-          # 配齐了才签，没配就出个没签名的包（首次打开要右键「打开」）
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # —— macOS 代码签名 ——
+          # 这里**故意不写** APPLE_CERTIFICATE 那几个变量。
+          # 原来写了，以为"Secret 没配就自动跳过签名"——不对：只要 env 里出现了
+          # 这个名字，变量就以空字符串的形式存在，而 Tauri 判断的是"变量在不在"，
+          # 于是拿空证书去跑 security import，直接炸：
+          #   security: SecKeychainItemImport: One or more parameters ... were not valid
+          #   failed codesign application
+          # （2026-08-17 v0.6.0 第一次出包就是这么挂的）
+          # 以后真买了 Apple 开发者证书，再把这几行加回来：
+          #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
+          #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
         with:
           tagName: ${{ github.ref_name }}
           # 展示用的名字跟官网统一成 AzTerm；
