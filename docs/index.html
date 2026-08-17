@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Az-term · SSH / SFTP 终端工具</title>
+  <meta name="description" content="Az-term：SSH 终端 + SFTP 双栏 + 远程文件直接改 + 端口转发 + 跳板机。支持 2FA、GBK 编码、断点续传、目录同步。免费、无账号、不过期，Windows 与 macOS 桌面版。">
+  <link rel="canonical" href="https://term.azi36.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Azi36">
+  <meta property="og:title" content="Az-term · SSH / SFTP 终端工具">
+  <meta property="og:description" content="连服务器这件事，本来就不该要账号。SSH、SFTP、端口转发、跳板机，全都不收钱。">
+  <meta property="og:url" content="https://term.azi36.com/">
+  <meta property="og:image" content="https://azi36.com/assets/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)">
+  <script>try{var t=localStorage.getItem("azi-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+  <link rel="stylesheet" href="assets/style.css?v=33">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://api.azi36.com" crossorigin>
+  <script src="https://cdn.jsdelivr.net/npm/@twemoji/api@15.1.0/dist/twemoji.min.js" crossorigin="anonymous" defer></script>
+  <script src="assets/site.js?v=14" defer></script>
+  <link rel="icon" href="assets/favicon.svg">
+  <style>
+    /* 这一页专有的几个零件。主站样式表里没有对应组件的才写在这儿，
+       颜色圆角一律用主站变量，别自己发明一套。 */
+
+    /* 下载按钮：主站的 .btn 撑不起「图标 + 两行字」，单独做一个 */
+    .dl-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 10px; }
+    .dl-btn {
+      display: flex; align-items: center; gap: 13px;
+      padding: 13px 20px; border-radius: var(--radius-lg);
+      border: 1px solid var(--border); background: var(--bg);
+      color: var(--text); text-decoration: none; box-shadow: var(--shadow-card);
+      transition: transform .18s var(--ease), border-color .18s var(--ease);
+    }
+    .dl-btn:hover { transform: translateY(-2px); border-color: var(--brand); }
+    .dl-btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .dl-btn.primary:hover { background: var(--brand-hover); }
+    .dl-btn svg { width: 24px; height: 24px; flex: none; }
+    .dl-btn b { display: block; font-size: 15px; line-height: 1.3; }
+    .dl-btn small { opacity: .72; font-size: 12px; }
+    .dl-note { color: var(--text-3); font-size: 12.5px; margin: 4px 0 0; line-height: 1.75; }
+
+    /* 交替的「一段话 + 一张界面」，Termius 那种节奏 */
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; align-items: center; margin: 26px 0 52px; }
+    .split.flip .split-visual { order: -1; }
+    .split-text h3 { margin: 0 0 10px; font-size: 24px; letter-spacing: -.01em; }
+    .split-text p { margin: 0 0 12px; color: var(--text-2); }
+    .split-text ul { margin: 0; padding-left: 20px; color: var(--text-2); }
+    .split-text li { margin: 5px 0; }
+    .split-tag {
+      display: inline-block; margin-bottom: 10px; padding: 2px 10px; border-radius: 999px;
+      background: var(--brand-light); color: var(--brand); font-size: 12px; font-weight: 700;
+    }
+    @media (max-width: 860px) {
+      .split { grid-template-columns: 1fr; gap: 24px; margin-bottom: 40px; }
+      .split.flip .split-visual { order: 0; }
+    }
+
+    /* 界面示意：纯 CSS 画的，画的是软件里真有的东西 */
+    .app-shot { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-float); background: var(--bg); }
+    .app-bar { display: flex; align-items: center; gap: 7px; padding: 9px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--border); }
+    .app-bar i { width: 10px; height: 10px; border-radius: 50%; background: #ff5f57; }
+    .app-bar i:nth-child(2) { background: #febc2e; }
+    .app-bar i:nth-child(3) { background: #28c840; }
+    .app-bar em { margin-left: 6px; color: var(--text-3); font-size: 11.5px; font-style: normal; }
+    .app-body { display: grid; grid-template-columns: 128px 1fr; min-height: 214px; }
+    .app-side { padding: 10px; border-right: 1px solid var(--border); background: var(--bg-soft); font-size: 11.5px; }
+    .app-side b { display: block; margin-bottom: 8px; color: var(--text-3); font-size: 10.5px; letter-spacing: .06em; }
+    .app-side span { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; color: var(--text-2); }
+    .app-side span.on { background: var(--brand-light); color: var(--brand); font-weight: 600; }
+    .app-side em { width: 7px; height: 7px; border-radius: 50%; background: #28c840; flex: none; }
+    .app-side em.off { background: var(--text-3); }
+    .app-main { display: flex; flex-direction: column; min-width: 0; }
+    .app-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); background: var(--bg-soft); font-size: 11.5px; }
+    .app-tabs span { padding: 5px 10px; border-radius: 6px 6px 0 0; color: var(--text-3); }
+    .app-tabs span.on { background: var(--bg); color: var(--brand); font-weight: 600; box-shadow: inset 0 -2px 0 var(--brand); }
+    .app-pane { flex: 1; padding: 12px 14px; background: #1d1e22; color: #e9e9ec; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.8; overflow: hidden; }
+    .app-pane .p { color: #4f6cf0; } .app-pane .ok { color: #28c840; } .app-pane .dim { color: #71717a; } .app-pane .warn { color: #e2b93d; }
+    /* 双栏文件面板的示意 */
+    .fs-shot { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); font-size: 11.5px; }
+    .fs-side { background: var(--bg); padding: 8px 10px; min-width: 0; }
+    .fs-side b { display: block; margin-bottom: 6px; color: var(--text-3); font-size: 10.5px; letter-spacing: .06em; }
+    .fs-side div { display: flex; justify-content: space-between; gap: 8px; padding: 3px 4px; border-radius: 5px; color: var(--text-2); white-space: nowrap; }
+    .fs-side div.sel { background: var(--brand-light); color: var(--brand); }
+    .fs-side small { color: var(--text-3); }
+    .fs-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-soft); color: var(--text-2); font-size: 11px; }
+    .fs-bar i { flex: 1; height: 4px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+    .fs-bar i b { display: block; width: 62%; height: 100%; background: var(--brand); }
+
+    /* 平台条 */
+    .plat-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
+    .plat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 13px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-2); font-size: 13px; }
+    .plat-chip svg { width: 15px; height: 15px; }
+    .plat-chip.soon { border-style: dashed; color: var(--text-3); }
+
+    /* 能力对照表。
+       主站那套表格样式写在 .article 下（文章页专用，还带 max-width:680px），
+       落地页套不上，所以照抄同一份规则，看上去跟站内文章的表格一模一样。 */
+    .table-wrap { overflow-x: auto; margin: 14px 0 18px; }
+    .table-wrap table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    .table-wrap th, .table-wrap td {
+      border: 1px solid var(--border);
+      padding: 8px 14px; text-align: left; white-space: nowrap;
+    }
+    .table-wrap th { background: var(--bg-soft); font-weight: 600; }
+
+    /* 不干什么 */
+    .nope-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+    .nope-grid div { padding: 16px 18px; border: 1px dashed var(--border); border-radius: var(--radius-lg); }
+    .nope-grid b { display: block; font-size: 15px; }
+    .nope-grid small { color: var(--text-3); font-size: 12.5px; }
+
+    /* 收尾的行动条 */
+    .cta-band {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+      margin: 10px 0 30px; padding: 26px 28px; border-radius: var(--radius-lg);
+      background: var(--grad-brand); color: #fff; box-shadow: var(--shadow-float);
+    }
+    .cta-band h2 { margin: 0; font-size: 22px; color: #fff; }
+    .cta-band p { margin: 4px 0 0; opacity: .88; font-size: 14px; }
+    .cta-band .btn { margin-left: auto; background: #fff; color: var(--brand); border-color: #fff; }
+    .cta-band .btn:hover { background: #f2f4ff; }
+
+    details.faq { padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); margin-bottom: 10px; }
+    details.faq summary { cursor: pointer; font-weight: 600; }
+    details.faq p { margin: 10px 0 0; color: var(--text-2); font-size: 14px; }
+  </style>
+</head>
+<body>
+
+  <!-- 极光装饰背景（跟主站同一套） -->
+  <div class="bg-decor">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    <div class="dots"></div>
+  </div>
+
+  <header class="site-header">
+    <div class="container">
+      <a class="site-logo" href="https://azi36.com">
+        <span class="logo-mark"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34 24 13l10 21" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="33.5" cy="13.5" r="3.4" fill="#ffb02e"/></svg></span>
+        <span class="wordmark">Az<b>-term</b></span>
+      </a>
+      <nav class="site-nav">
+        <a href="#features">功能</a>
+        <a href="#platform">平台</a>
+        <a href="#download">下载</a>
+        <a href="#faq">问答</a>
+        <a href="https://azi36.com">主站</a>
+      </nav>
+      <div class="nav-side">
+        <span class="nav-status"><em class="nav-emo">😊</em>免费不过期</span>
+        <button class="theme-toggle" type="button" aria-label="切换深浅色" title="切换深浅色">
+          <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
+          <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        </button>
+        <a class="nav-gh" href="https://github.com/Azi36/Az-terminal-tools" aria-label="GitHub"><img src="assets/img/avatar.png" alt="Azi36"></a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ===== Hero ===== -->
+    <section class="hero hero-split">
+      <div class="hero-text">
+        <div class="kicker">PRODUCT № 002 · 桌面工具 · 免费开源</div>
+        <h1><span class="grad-text">Az-term</span></h1>
+        <p class="hero-tagline">连服务器这件事，本来就不该要账号。</p>
+        <p class="quote-line">
+          SSH 终端、SFTP 双栏、端口转发、跳板机。别人锁在订阅里的，这儿一样不少。
+        </p>
+
+        <div class="dl-row">
+          <a class="dl-btn primary" id="dlPrimary" href="https://github.com/Azi36/Az-terminal-tools/releases/latest">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6 10.2 4.6v6.8H3zM11.4 4.4 21 3v8.4h-9.6zM3 12.6h7.2v6.8L3 18.4zM11.4 12.6H21V21l-9.6-1.4z"/></svg>
+            <span><b>下载 <i id="dlPrimaryOS">Windows</i> 版</b><small id="dlPrimaryHint">免费 · 无需注册</small></span>
+          </a>
+          <a class="dl-btn" href="https://github.com/Azi36/Az-terminal-tools" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            <span><b>看源码</b><small>MIT · 自己也能构建</small></span>
+          </a>
+        </div>
+        <p class="dl-note" id="verLine">第一个版本正在准备，发布后这里显示版本号</p>
+      </div>
+
+      <div class="hero-visual">
+        <div class="app-shot">
+          <div class="app-bar"><i></i><i></i><i></i><em>Azi-Terminal</em></div>
+          <div class="app-body">
+            <div class="app-side">
+              <b>服务器</b>
+              <span class="on"><em></em>京东云</span>
+              <span><em class="off"></em>测试机</span>
+              <span><em class="off"></em>NAS</span>
+              <b style="margin-top:10px">数据库</b>
+              <span style="color:var(--text-3)">排队中</span>
+            </div>
+            <div class="app-main">
+              <div class="app-tabs"><span class="on">终端</span><span>文件</span><span>隧道</span><span>配置</span></div>
+              <div class="app-pane">
+                <div><span class="p">root@server</span>:<span class="dim">~</span># uptime</div>
+                <div class="dim"> 15:04 up 96 days, load average: 0.08</div>
+                <div><span class="p">root@server</span>:<span class="dim">~</span># <span class="warn">nginx -t</span></div>
+                <div><span class="ok">✓</span> configuration file test is successful</div>
+                <div class="dim">↑ 这条是从指令库点出来的，没手打</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 平台 ===== -->
+    <section id="platform">
+      <div class="md-title"><span>##</span>装在哪</div>
+      <div class="plat-row">
+        <span class="plat-chip">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6 10.2 4.6v6.8H3zM11.4 4.4 21 3v8.4h-9.6zM3 12.6h7.2v6.8L3 18.4zM11.4 12.6H21V21l-9.6-1.4z"/></svg>
+          Windows · .msi
+        </span>
+        <span class="plat-chip">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.9-.8-1.5 0-2.9.9-3.6 2.3-1.6 2.7-.4 6.7 1.1 8.9.7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7 1.3 0 1.7.7 2.9.7 1.2 0 2-1.1 2.7-2.2.5-.7.7-1.1 1.1-1.9-2.8-1.1-2.4-4.2-2.4-4.3zM14.3 6.3c.6-.7 1-1.7.9-2.7-.9 0-2 .6-2.6 1.3-.6.6-1 1.6-.9 2.6 1 .1 2-.5 2.6-1.2z"/></svg>
+          macOS · Intel 与 Apple 芯片通用
+        </span>
+        <span class="plat-chip soon">Linux · 源码可构建，暂不出包</span>
+      </div>
+      <p class="dl-note" style="margin-top:12px">包体十几兆。Tauri 做的，用系统自带的 webview，不塞一整个浏览器进去。</p>
+    </section>
+
+    <!-- ===== 功能：交替排版 ===== -->
+    <section id="features">
+      <div class="md-title"><span>##</span>它能干什么</div>
+
+      <div class="split">
+        <div class="split-text">
+          <span class="split-tag">终端</span>
+          <h3>一台服务器，一个标签</h3>
+          <p>终端、文件、隧道、配置都在这个标签里翻页。切走的终端还活着，回来接着敲。</p>
+          <ul>
+            <li>Rust 引擎（russh）+ xterm.js，真 PTY 真颜色</li>
+            <li>密码、密钥、<strong>2FA 动态口令</strong>都能登</li>
+            <li>看到乱码就把编码从 UTF-8 切成 <strong>GBK</strong>，不用重连</li>
+            <li>掉线自己接回来，会话输出能存成日志</li>
+            <li>配色 6 套、字号 4 档，回滚 5000 行</li>
+          </ul>
+        </div>
+        <div class="split-visual">
+          <div class="app-shot">
+            <div class="app-bar"><i></i><i></i><i></i><em>终端 · Ctrl+Shift+F 查找</em></div>
+            <div class="app-pane" style="min-height:190px">
+              <div><span class="p">root@server</span>:<span class="dim">~</span># docker ps -a</div>
+              <div class="dim">CONTAINER   IMAGE          STATUS</div>
+              <div>a1c9f2e3    nginx:alpine   <span class="ok">Up 12 days</span></div>
+              <div>77b0d41a    redis:7        <span class="warn">Exited (0)</span></div>
+              <div><span class="p">root@server</span>:<span class="dim">~</span># <span class="dim">▎</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split flip">
+        <div class="split-text">
+          <span class="split-tag">文件</span>
+          <h3>传一半断了，接着传</h3>
+          <p>左本地右远程，走的是终端那条连接的子通道，不用二次输密码。</p>
+          <ul>
+            <li><strong>断点续传</strong>；传到一半也能喊停，半截文件自动收干净</li>
+            <li>重名先问你：覆盖 / 跳过 / 续传，不闷声盖掉</li>
+            <li><strong>目录同步</strong>：只推新的和改过的，不删对面的东西</li>
+            <li>几个文件同时传，速度和剩余时间实时在跳</li>
+            <li>整个目录拖进来直接传；上万个文件的目录也不卡</li>
+          </ul>
+        </div>
+        <div class="split-visual">
+          <div class="app-shot">
+            <div class="app-bar"><i></i><i></i><i></i><em>文件 · 本地 ⇄ 远程</em></div>
+            <div class="fs-shot">
+              <div class="fs-side">
+                <b>本地 · D:\deploy</b>
+                <div class="sel"><span>dist/</span><small>目录</small></div>
+                <div class="sel"><span>app.tar.gz</span><small>18 MB</small></div>
+                <div><span>README.md</span><small>2 KB</small></div>
+              </div>
+              <div class="fs-side">
+                <b>远程 · /srv/app</b>
+                <div><span>current/</span><small>目录</small></div>
+                <div><span>app.tar.gz</span><small>11 MB</small></div>
+                <div><span>logs/</span><small>目录</small></div>
+              </div>
+              <div class="fs-bar">
+                <span>↑ app.tar.gz</span><i><b></b></i><span>11 / 18 MB · 2.4 MB/s · 剩 3 秒</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="split-text">
+          <span class="split-tag">编辑</span>
+          <h3>远程配置文件，点开就改</h3>
+          <p>老流程是下载 → 本地改 → 记得上传 → 忘了上传 → 改了半天没生效。这儿 Ctrl+S 直接写回原路径。</p>
+          <ul>
+            <li>不落临时文件、不叫外部编辑器、不用手动上传</li>
+            <li>GBK 的文件按 GBK 存回去，不会悄悄变成 UTF-8</li>
+            <li>原来是 CRLF 就还它 CRLF，改一行不会变成整个文件都动过</li>
+            <li>存之前查一眼有没有被别人改过，有就停下来问你</li>
+            <li>查找替换、跳行、行号，顺手 chmod</li>
+          </ul>
+        </div>
+        <div class="split-visual">
+          <div class="app-shot">
+            <div class="app-bar"><i></i><i></i><i></i><em>nginx.conf · 远程 · rw-r--r--</em></div>
+            <div class="app-pane" style="min-height:190px">
+              <div><span class="dim">12</span>  server {</div>
+              <div><span class="dim">13</span>    listen 443 ssl;</div>
+              <div><span class="dim">14</span>    server_name <span class="warn">term.azi36.com</span>;</div>
+              <div><span class="dim">15</span>  }</div>
+              <div class="ok">✓ 刚刚存回服务器了</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split flip">
+        <div class="split-text">
+          <span class="split-tag">隧道</span>
+          <h3>内网的东西，本机直接连</h3>
+          <p>数据库只对服务器开放？转发一下就好。走的还是那条已经认证过的连接，不用再登录一次。</p>
+          <ul>
+            <li><strong>本地转发</strong>（-L）：本机连 5432，等于服务器在连内网库</li>
+            <li><strong>动态代理</strong>（-D）：本机一个 SOCKS5，浏览器挂上去</li>
+            <li><strong>远程转发</strong>（-R）：服务器开个口，落到你本机的服务</li>
+            <li><strong>跳板机</strong>：先过堡垒机再连目标机，等同 ProxyJump</li>
+            <li>断开会话时自动全部收掉，不留半开的口子</li>
+          </ul>
+        </div>
+        <div class="split-visual">
+          <div class="app-shot">
+            <div class="app-bar"><i></i><i></i><i></i><em>隧道 · 2 条开着</em></div>
+            <div class="app-pane" style="min-height:190px">
+              <div><span class="ok">●</span> 本地转发 <span class="dim">-L</span></div>
+              <div class="dim">  127.0.0.1:5432 → db.internal:5432</div>
+              <div><span class="ok">●</span> 动态代理 <span class="dim">-D</span></div>
+              <div class="dim">  socks5://127.0.0.1:1080 <span class="ok">· 3 条连接</span></div>
+              <div><span class="dim">○ 远程转发 -R · 没开</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="split-text">
+          <span class="split-tag">效率</span>
+          <h3>不用再狂按方向键翻历史</h3>
+          <p>常敲的命令存一次，以后点一下填进终端，或者按 ▶ 直接执行。</p>
+          <ul>
+            <li>开箱 45 条预设：系统、磁盘、进程、网络、Docker、Nginx、Git……</li>
+            <li>备忘录也在软件里，不用另开一个记事本</li>
+            <li>配置一键导出成 JSON，换台电脑搬过去就行</li>
+            <li>服务器清单在 <code>~/.ssh/config</code> 里的话，直接读进来</li>
+          </ul>
+        </div>
+        <div class="split-visual">
+          <div class="app-shot">
+            <div class="app-bar"><i></i><i></i><i></i><em>指令库</em></div>
+            <div class="app-pane" style="min-height:190px">
+              <div class="dim">磁盘</div>
+              <div><span class="ok">▶</span> 磁盘占用 <span class="dim">df -h</span></div>
+              <div><span class="ok">▶</span> 谁最占地方 <span class="dim">du -sh * | sort -rh</span></div>
+              <div class="dim">Docker</div>
+              <div><span class="ok">▶</span> 容器列表 <span class="dim">docker ps -a</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 凭据 ===== -->
+    <section>
+      <div class="md-title"><span>##</span>凭据这块，说清楚</div>
+      <div class="feature-grid">
+        <div class="feature">
+          <div class="feature-icon">🔐</div>
+          <h3>密码进系统钥匙串</h3>
+          <p>Windows 凭据管理器 / macOS Keychain。我们自己的配置文件里一个字节明文都没有，前端代码也拿不到——它只能问"这条记过没有"。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔑</div>
+          <h3>私钥只存路径</h3>
+          <p>私钥内容连接时才读，不落盘、不进日志。密码短语要不要记，你自己勾。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🖐️</div>
+          <h3>指纹用标准 known_hosts</h3>
+          <p>跟系统 ssh 共用 <code>~/.ssh/known_hosts</code>。头一回连自动记下不打扰你，<strong>指纹变了才拦住报警</strong>——那才是该停下来看一眼的时候。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🚫</div>
+          <h3>不经手你的流量</h3>
+          <p>你的电脑直连你的服务器，中间没有我的服务器。所以它才能一直免费。</p>
+        </div>
+      </div>
+      <p class="dl-note" style="margin-top:16px">
+        导出的备份里<strong>不含密码</strong>——导成明文就把上面这一整套作废了。换机器第一次连再输一次，就这一次。
+      </p>
+    </section>
+
+    <!-- ===== 不干什么 ===== -->
+    <section>
+      <div class="md-title"><span>##</span>它不干什么</div>
+      <p class="page-desc">这几条是设计目标，不是"暂时还没做"。</p>
+      <div class="nope-grid">
+        <div><b>不要账号</b><small>不注册、不登录、不收邮箱</small></div>
+        <div><b>不传云</b><small>连接配置只在你这台机器上</small></div>
+        <div><b>不过期</b><small>没有试用期，没有到期弹窗</small></div>
+        <div><b>不锁功能</b><small>端口转发这些也不设付费墙</small></div>
+      </div>
+    </section>
+
+    <!-- ===== 还差什么（老实交代） ===== -->
+    <section>
+      <div class="md-title"><span>##</span>还差什么</div>
+      <p class="page-desc">
+        还没做的是<strong>分屏广播</strong>和 <strong>FTP</strong>。别的日常该有的，基本齐了。
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>能力</th><th>Az-term</th><th>常见订阅制客户端</th></tr>
+          <tr><td>SSH 终端 / 多标签</td><td>✅ 免费</td><td>✅ 免费档通常有</td></tr>
+          <tr><td>SFTP 文件管理</td><td>✅ 免费</td><td>多数在订阅里</td></tr>
+          <tr><td>远程文件直接编辑</td><td>✅ 内置</td><td>常要外部编辑器</td></tr>
+          <tr><td>端口转发 / SOCKS 代理</td><td>✅ 免费</td><td>✅ 有（多在订阅里）</td></tr>
+          <tr><td>跳板机 / 堡垒机</td><td>✅ 免费</td><td>✅ 有（多在订阅里）</td></tr>
+          <tr><td>2FA / 动态口令登录</td><td>✅ 支持</td><td>✅ 有</td></tr>
+          <tr><td>断点续传 / 目录同步</td><td>✅ 免费</td><td>看产品，多在付费档</td></tr>
+          <tr><td>GBK 等编码切换</td><td>✅ 连着也能换</td><td>✅ 有</td></tr>
+          <tr><td>指令片段 / 快捷命令</td><td>✅ 免费</td><td>多数在订阅里</td></tr>
+          <tr><td>分屏 / 输入广播到多台</td><td>❌ 还没做</td><td>✅ 有</td></tr>
+          <tr><td>FTP</td><td>❌ 还没做（SFTP 有）</td><td>✅ 有</td></tr>
+          <tr><td>多设备云同步</td><td>❌ 不做云；配置能导出搬走</td><td>✅ 有（要账号）</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== 下载 ===== -->
+    <section id="download">
+      <div class="md-title"><span>##</span>下载</div>
+      <p class="page-desc">安装包由 GitHub Actions 直接构建，来源可查。</p>
+      <div class="dl-row">
+        <a class="dl-btn primary" id="dlWin" href="https://github.com/Azi36/Az-terminal-tools/releases/latest">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6 10.2 4.6v6.8H3zM11.4 4.4 21 3v8.4h-9.6zM3 12.6h7.2v6.8L3 18.4zM11.4 12.6H21V21l-9.6-1.4z"/></svg>
+          <span><b>Windows</b><small id="dlWinHint">.msi 安装包 · 64 位</small></span>
+        </a>
+        <a class="dl-btn" id="dlMac" href="https://github.com/Azi36/Az-terminal-tools/releases/latest">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.9-.8-1.5 0-2.9.9-3.6 2.3-1.6 2.7-.4 6.7 1.1 8.9.7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7 1.3 0 1.7.7 2.9.7 1.2 0 2-1.1 2.7-2.2.5-.7.7-1.1 1.1-1.9-2.8-1.1-2.4-4.2-2.4-4.3zM14.3 6.3c.6-.7 1-1.7.9-2.7-.9 0-2 .6-2.6 1.3-.6.6-1 1.6-.9 2.6 1 .1 2-.5 2.6-1.2z"/></svg>
+          <span><b>macOS</b><small id="dlMacHint">.dmg · Intel 与 Apple 芯片通用</small></span>
+        </a>
+        <a class="dl-btn" href="https://github.com/Azi36/Az-terminal-tools/releases" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 11l5 5 5-5M4 21h16"/></svg>
+          <span><b>历史版本</b><small>全部 Release</small></span>
+        </a>
+      </div>
+      <p class="dl-note">
+        没做代码签名（个人证书一年好几百，暂时省了）。Windows 首次打开可能提示"未知发布者"，
+        macOS 去「系统设置 → 隐私与安全性」点一下「仍要打开」。介意的话可以自己从源码构建。
+      </p>
+    </section>
+
+    <div class="cta-band">
+      <div>
+        <h2>装完就能连，不问你要邮箱</h2>
+        <p>免费 · 无账号 · 不过期 · MIT 开源</p>
+      </div>
+      <a class="btn btn-primary" id="dlCta" href="https://github.com/Azi36/Az-terminal-tools/releases/latest">下载 Az-term<span class="btn-arrow">→</span></a>
+    </div>
+
+    <!-- ===== FAQ ===== -->
+    <section id="faq">
+      <div class="md-title"><span>##</span>几个问题</div>
+      <details class="faq">
+        <summary>为什么免费？以后会收费吗？</summary>
+        <p>所有连接都是你的电脑直连你的服务器，我这边不经手流量，也没有账号系统要养。没有服务器成本，收费没道理。不收。</p>
+      </details>
+      <details class="faq">
+        <summary>和 Xshell / Xftp / Termius 比呢？</summary>
+        <p>日常那部分追平了：敲命令、传文件、改配置，加上端口转发、跳板机、2FA、断点续传、目录同步。还差分屏广播和 FTP。区别在于这些都不锁付费墙，也不用注册。</p>
+      </details>
+      <details class="faq">
+        <summary>数据会同步到云上吗？</summary>
+        <p>不会。连接配置、指令、备忘全在本机。想换机器就导出成一个 JSON 自己搬——里面不含密码。</p>
+      </details>
+      <details class="faq">
+        <summary>会偷偷连网吗？</summary>
+        <p>只有一件事：开起来几秒后问一句「有没有新版」。就一个 GET，不带身份、不上报任何东西，设置里能关。</p>
+      </details>
+      <details class="faq">
+        <summary>支持 Linux 吗？</summary>
+        <p>Tauri 本身支持，源码自己构建能跑，只是 CI 里目前只出 Windows 和 macOS 包。</p>
+      </details>
+      <details class="faq">
+        <summary>能自己改吗？</summary>
+        <p>MIT 协议，随便改随便分发。前端 React + TypeScript，内核 Rust，构建命令在 README 里。</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-brand">
+        <a class="site-logo" href="https://azi36.com">
+          <span class="logo-mark"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34 24 13l10 21" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="33.5" cy="13.5" r="3.4" fill="#ffb02e"/></svg></span>
+          <span class="wordmark">Azi<b>36</b></span>
+        </a>
+        <p class="footer-tag">把灵感慢慢掏出来，别急！</p>
+        <div class="footer-social">
+          <a href="https://github.com/Azi36/Az-terminal-tools" target="_blank" rel="noopener" aria-label="GitHub">
+            <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          </a>
+        </div>
+      </div>
+      <div class="footer-cols">
+        <div class="footer-col">
+          <a href="#features">功能</a>
+          <a href="#download">下载</a>
+          <a href="#faq">问答</a>
+          <a href="https://azi36.com/products/az-term.html">产品详情</a>
+        </div>
+        <div class="footer-col">
+          <a href="https://azi36.com">Azi36 主站</a>
+          <a href="https://im.azi36.com" target="_blank" rel="noopener">Az-im 图像工具</a>
+          <a href="https://github.com/Azi36/Az-terminal-tools" target="_blank" rel="noopener">GitHub 仓库</a>
+        </div>
+      </div>
+    </div>
+    <div class="container footer-meta">
+      <span>© 2026 Azi36 · MIT · No Rights Reserved.</span>
+      <a class="meta-top" href="#">回到顶部 ↑</a>
+    </div>
+    <div class="footer-ghost" aria-hidden="true">AZ-TERM</div>
+  </footer>
+
+<script>
+// 按当前系统把主按钮指向对应的包
+var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+if (isMac) document.getElementById("dlPrimaryOS").textContent = "macOS";
+
+// 版本号先问自己的后端（api.azi36.com，国内直达）——只为了把版本号显示出来。
+// 安装包还是 GitHub 的，这里不改下载源。
+fetch("https://api.azi36.com/release/az-term", { cache: "no-store" })
+  .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+  .then(function (rel) {
+    if (!rel || !rel.version) return;
+    var date = (rel.pubDate || "").slice(0, 10);
+    document.getElementById("verLine").textContent =
+      "最新版 v" + rel.version + (date ? " · " + date + " 发布" : "");
+    document.getElementById("dlPrimaryHint").textContent = "v" + rel.version + " · 免费无需注册";
+  })
+  .catch(function () {});
+
+// 再问 GitHub：拿安装包直链和体积。国内经常拉不动，拉不动就保留 releases 页兜底，
+// 版本号那行上面已经填过了，不受影响。
+fetch("https://api.github.com/repos/Azi36/Az-terminal-tools/releases/latest")
+  .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+  .then(function (rel) {
+    var assets = rel.assets || [];
+    var find = function (re) {
+      var hit = assets.filter(function (a) { return re.test(a.name); })[0];
+      return hit && hit.browser_download_url;
+    };
+    var win = find(/\.msi$/i) || find(/\.exe$/i);
+    var mac = find(/\.dmg$/i);
+    var date = (rel.published_at || "").slice(0, 10);
+    var size = function (url) {
+      var hit = assets.filter(function (a) { return a.browser_download_url === url; })[0];
+      return hit ? " · " + Math.round(hit.size / 1048576) + " MB" : "";
+    };
+    document.getElementById("verLine").textContent =
+      "最新版 " + rel.tag_name + (date ? " · " + date + " 发布" : "");
+    if (win) {
+      document.getElementById("dlWin").href = win;
+      document.getElementById("dlWinHint").textContent = ".msi 安装包 · " + rel.tag_name + size(win);
+    }
+    if (mac) {
+      document.getElementById("dlMac").href = mac;
+      document.getElementById("dlMacHint").textContent = ".dmg 通用包 · " + rel.tag_name + size(mac);
+    }
+    var primary = isMac ? mac : win;
+    if (primary) {
+      document.getElementById("dlPrimary").href = primary;
+      document.getElementById("dlCta").href = primary;
+      document.getElementById("dlPrimaryHint").textContent = rel.tag_name + " · 免费无需注册";
+    }
+  })
+  .catch(function () {});
+</script>
+</body>
+</html>

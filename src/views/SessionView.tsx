@@ -1,0 +1,719 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
+import { Terminal } from "../components/Terminal";
+import { SftpPanel } from "./SftpPanel";
+import { ConnectionPage } from "./ConnectionPage";
+import { TunnelPanel } from "./TunnelPanel";
+import { IconCheck, IconFiles, IconKey, IconLink, IconLock, IconSettings, IconTerminal, IconX } from "../components/icons";
+import { DEFAULT_ENCODING, ENCODINGS, type Connection } from "../types";
+
+type Mode = "term" | "files" | "config" | "tunnel";
+
+interface SessionViewProps {
+  conn: Connection;
+  /** 这个标签是不是正显示着 —— 空闲唤醒、拖拽上传都要看它 */
+  active: boolean;
+  /** 空闲多少分钟自动断开；0 = 不断 */
+  idleMinutes: number;
+  /** 终端配色方案 id 和字号 */
+  termScheme: string;
+  termVariant: "dark" | "light";
+  termFontSize: number;
+  termDivider: boolean;
+  /** 主机指纹校验策略 */
+  hostPolicy: string;
+  /** 同时传几个文件 */
+  xferLanes: number;
+  /** 掉线要不要自动接回来 */
+  autoReconnect: boolean;
+  /** 开标签时停在哪一页 */
+  initialMode?: Mode;
+  /** 开标签要不要顺手连上（双击进来是要连的，单击看配置就不连） */
+  autoConnect?: boolean;
+  /** 会话建立 / 断开时告诉上层，指令库要往当前终端里塞命令 */
+  onSession: (sessionId: string | null) => void;
+  /** 文件面板里点了「编辑」→ 上层开一个编辑器标签 */
+  onEditFile: (side: "local" | "remote", path: string) => void;
+  /** 配了跳板机的话，那条连接的配置（上层按 jumpId 找出来给我们） */
+  jump?: Connection | null;
+  onSaveConn: (conn: Connection) => void;
+  onDeleteConn: (conn: Connection) => void;
+  /** 配置页有没有没保存的改动 */
+  onConfigDirty: (dirty: boolean) => void;
+}
+
+interface HostKeyInfo {
+  /** unknown 头一回见 · changed 指纹变了 */
+  kind: "unknown" | "changed";
+  algo: string;
+  fingerprint: string;
+}
+
+/** 掉线后最多自动接几次 */
+const RETRY_TIMES = 4;
+
+/** 服务器在键盘交互认证里问的一组问题（2FA 验证码、过期密码之类） */
+interface AuthPrompts {
+  name: string;
+  instructions: string;
+  prompts: { prompt: string; echo: boolean }[];
+}
+
+type SshError = { message: string; detail?: string | null; hostKey?: HostKeyInfo; auth?: AuthPrompts };
+
+type Phase =
+  | { kind: "idle" }
+  | { kind: "connecting" }
+  | { kind: "open"; sessionId: string }
+  /** 闲太久自动断的，回到这个标签就自己接上 */
+  | { kind: "napped" }
+  /** 服务器还要问几句（验证码之类），等用户回答 */
+  | { kind: "asking" }
+  | { kind: "error"; err: SshError };
+
+/**
+ * 一台服务器 = 一个标签：里面终端、文件、配置三页切换，不再往外开新页面。
+ * 凭据记过一次（或用无密码短语的密钥）就直接连，不再拦一道输入框；
+ * 密码本身存在系统钥匙串里，前端拿不到，只知道「存过没有」。
+ */
+export function SessionView({
+  conn,
+  active,
+  idleMinutes,
+  termScheme,
+  termVariant,
+  termFontSize,
+  termDivider,
+  hostPolicy,
+  xferLanes,
+  autoReconnect,
+  initialMode = "term",
+  autoConnect = true,
+  jump,
+  onSession,
+  onEditFile,
+  onSaveConn,
+  onDeleteConn,
+  onConfigDirty,
+}: SessionViewProps) {
+  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [password, setPassword] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [remember, setRemember] = useState(true);
+  const [mode, setMode] = useState<Mode>(initialMode);
+  /** 这条会话此刻用的编码（可以连着改，不用重连） */
+  const [encoding, setEncoding] = useState(conn.encoding || DEFAULT_ENCODING);
+  // 文件面板懒挂载，挂了就留着，切回来目录还在原处
+  const [filesMounted, setFilesMounted] = useState(false);
+
+  const isKey = conn.authType === "key";
+  const open = phase.kind === "open";
+
+  // 回调放 ref 里，父组件每次渲染都不会把下面的监听重挂一遍
+  const notify = useRef(onSession);
+  notify.current = onSession;
+
+  const [askHost, setAskHost] = useState<HostKeyInfo | null>(null);
+  const [askAuth, setAskAuth] = useState<AuthPrompts | null>(null);
+  /** 掉线后自动重连的倒计时；null = 没在重连 */
+  const [retry, setRetry] = useState<{ left: number; seconds: number } | null>(null);
+  /** 会话日志开着没有 */
+  const [logging, setLogging] = useState(false);
+  const [logErr, setLogErr] = useState<string | null>(null);
+  /** 这次断开是用户自己点的，不是掉线 */
+  const byHand = useRef(false);
+  const retryOn = useRef(autoReconnect);
+  retryOn.current = autoReconnect;
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  /** 认证没走完那条连接的 id：用户答完题要拿它接着往下认 */
+  const attempt = useRef<{ sessionId: string; typed: string; silent: boolean } | null>(null);
+
+  /** 连上了：收拾输入框、挂上会话 */
+  const settle = useCallback((sessionId: string) => {
+    const tried = attempt.current;
+    if (tried && !tried.silent && remember && tried.typed) setSaved(true);
+    attempt.current = null;
+    setAskHost(null);
+    setAskAuth(null);
+    setPassword("");
+    setPassphrase("");
+    setPhase({ kind: "open", sessionId });
+    notify.current(sessionId);
+    // 落在文件页（或 SFTP 协议的连接）就直接把文件面板挂上
+    setMode((current) => {
+      const next = conn.protocol === "sftp" && current === "term" ? "files" : current;
+      if (next === "files") setFilesMounted(true);
+      return next;
+    });
+  }, [conn.protocol, remember]);
+
+  /** 认证失败 / 断在半路：统一在这儿分流成「问指纹」「问验证码」「报错」 */
+  const stumble = useCallback((e: unknown) => {
+    // Rust 侧返回结构化错误 {message, detail, hostKey?, auth?}
+    const err: SshError =
+      e && typeof e === "object" && "message" in e
+        ? (e as SshError)
+        : { message: "连接失败", detail: String(e) };
+    // 服务器还要问几句（2FA 验证码、过期密码）：把问题原样摆出来
+    if (err.auth) {
+      setAskAuth(err.auth);
+      setPhase({ kind: "asking" });
+      return;
+    }
+    attempt.current = null;
+    // 主机指纹没过：把指纹摆出来让用户自己判断
+    if (err.hostKey) setAskHost(err.hostKey);
+    setPhase({ kind: "error", err });
+  }, []);
+
+  const connect = useCallback(async (silent = false, trustHost = false) => {
+    if (conn.protocol === "ftp") return;
+    if (isKey && !conn.keyPath) {
+      setPhase({ kind: "error", err: { message: "这个连接没有配置私钥路径，去「配置」页补上" } });
+      return;
+    }
+    const typed = isKey ? passphrase : password;
+    const sessionId = `${conn.id}-${Date.now()}`;
+    attempt.current = { sessionId, typed, silent };
+    setPhase({ kind: "connecting" });
+    try {
+      await invoke("ssh_connect", {
+        params: {
+          sessionId,
+          connId: conn.id,
+          host: conn.host,
+          port: conn.port,
+          username: conn.username,
+          authType: conn.authType,
+          password: isKey ? null : password || null,
+          keyPath: isKey ? conn.keyPath : null,
+          passphrase: isKey && passphrase ? passphrase : null,
+          // 自动连的时候没有新凭据可记，别去动钥匙串
+          remember: !silent && remember && typed !== "",
+          trustHost,
+          // 用户核对过的就是这一串；引擎拿它跟服务器这次给的钥匙比对，
+          // 对不上照样拦下来 —— 不然「点信任」等于对任意钥匙放行
+          trustFingerprint: trustHost ? askHost?.fingerprint ?? null : null,
+          hostPolicy,
+          encoding,
+          // 配了跳板机就把那条连接的信息带上；它的密码从钥匙串里取，不在这儿传
+          jump: jump
+            ? {
+                connId: jump.id,
+                host: jump.host,
+                port: jump.port,
+                username: jump.username,
+                authType: jump.authType,
+                keyPath: jump.keyPath ?? null,
+                hostPolicy,
+              }
+            : null,
+        },
+      });
+      settle(sessionId);
+    } catch (e) {
+      stumble(e);
+    }
+  }, [conn, isKey, password, passphrase, remember, hostPolicy, encoding, jump, askHost, settle, stumble]);
+
+  /** 把用户的回答送回引擎，接着往下认证 */
+  const answer = useCallback(async (answers: string[]) => {
+    const tried = attempt.current;
+    if (!tried) return;
+    setPhase({ kind: "connecting" });
+    try {
+      await invoke("ssh_answer", { sessionId: tried.sessionId, answers });
+      settle(tried.sessionId);
+    } catch (e) {
+      stumble(e);
+    }
+  }, [settle, stumble]);
+
+  /** 不答了：让引擎把那条半截连接丢掉，别挂在内存里 */
+  const dropAuth = useCallback(() => {
+    const tried = attempt.current;
+    if (tried) invoke("ssh_cancel_auth", { sessionId: tried.sessionId }).catch(() => {});
+    attempt.current = null;
+    setAskAuth(null);
+    setPhase({ kind: "idle" });
+  }, []);
+
+  const connectNow = useRef(connect);
+  connectNow.current = connect;
+
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  // 开标签先问钥匙串：记过密码（或用密钥）且这次是奔着连来的，就直接连上
+  const probed = useRef(false);
+  useEffect(() => {
+    if (conn.protocol === "ftp" || probed.current) return;
+    probed.current = true;
+    invoke<boolean>("creds_has", { connId: conn.id })
+      .then((has) => {
+        if (!mounted.current) return;
+        setSaved(has);
+        if (autoConnect && (has || isKey)) connectNow.current(true);
+      })
+      .catch(() => {});
+  }, [conn.id, conn.protocol, isKey, autoConnect]);
+
+  // 服务器主动断开（exit / 超时 / 网络抖）→ 回到连接面板，能自动接的就自动接
+  const openSessionId = open ? phase.sessionId : null;
+  useEffect(() => {
+    if (!openSessionId) return;
+    let un: UnlistenFn | undefined;
+    listen(`ssh://close/${openSessionId}`, () => {
+      notify.current(null);
+      setLogging(false);
+      // 用户自己点的断开不算「掉线」，别在这儿又给他接回去
+      if (byHand.current) { byHand.current = false; return; }
+      setPhase({ kind: "error", err: { message: "连接断了，再连一次？" } });
+      // 手上有凭据（记过密码或用密钥）才自动重连 —— 否则弹密码框更烦人
+      if (retryOn.current && (isKey || savedRef.current)) setRetry({ left: RETRY_TIMES, seconds: 3 });
+    }).then((fn) => (un = fn));
+    return () => un?.();
+  }, [openSessionId, isKey]);
+
+  // —— 自动重连 ——
+  // 网线抖一下、Wi-Fi 换个热点，不该让人手动点回来。
+  // 退避着来（3 秒 → 6 秒 → 12 秒），试几次不行就停下，别一直骚扰服务器。
+  useEffect(() => {
+    if (!retry) return;
+    if (retry.seconds <= 0) {
+      setRetry(null);
+      void connectNow.current(true);
+      return;
+    }
+    const timer = setTimeout(() => setRetry((one) => (one ? { ...one, seconds: one.seconds - 1 } : null)), 1000);
+    return () => clearTimeout(timer);
+  }, [retry]);
+
+  // 重连又断了：还有次数就翻倍等着再来
+  const lastRetry = useRef<number | null>(null);
+  useEffect(() => {
+    if (phase.kind === "open") { lastRetry.current = null; return; }
+    if (phase.kind !== "error" || retry) return;
+    const left = lastRetry.current;
+    if (left === null || left <= 1) return;
+    lastRetry.current = null;
+    setRetry({ left: left - 1, seconds: Math.min(24, (RETRY_TIMES - left + 2) * 3) });
+  }, [phase, retry]);
+  useEffect(() => { if (retry) lastRetry.current = retry.left; }, [retry]);
+
+  // —— 空闲自动断开 ——
+  const lastActive = useRef(Date.now());
+  const touch = useCallback(() => { lastActive.current = Date.now(); }, []);
+
+  useEffect(() => {
+    if (!openSessionId || idleMinutes <= 0) return;
+    lastActive.current = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - lastActive.current < idleMinutes * 60_000) return;
+      invoke("ssh_close", { sessionId: openSessionId }).catch(() => {});
+      notify.current(null);
+      setPhase({ kind: "napped" });
+    }, 20_000);
+    return () => clearInterval(timer);
+  }, [openSessionId, idleMinutes]);
+
+  // 从别处切回这个标签 → 把打盹的会话接上；在当前标签上打的盹等用户叫醒
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const cameBack = active && !wasActive.current;
+    wasActive.current = active;
+    if (cameBack && phase.kind === "napped") connectNow.current(true);
+  }, [active, phase.kind]);
+
+  const disconnect = async () => {
+    // 标一下：接下来那个 close 事件是我自己弄的，别触发自动重连
+    byHand.current = true;
+    setRetry(null);
+    setLogging(false);
+    if (open) await invoke("ssh_close", { sessionId: phase.sessionId }).catch(() => {});
+    // 认证走到一半也算这条连接，一并收掉
+    if (attempt.current) invoke("ssh_cancel_auth", { sessionId: attempt.current.sessionId }).catch(() => {});
+    attempt.current = null;
+    setAskAuth(null);
+    notify.current(null);
+    setFilesMounted(false);
+    setMode((current) => (current === "files" ? "term" : current));
+    setPhase({ kind: "idle" });
+  };
+
+  const forget = async () => {
+    await invoke("creds_forget", { connId: conn.id }).catch(() => {});
+    setSaved(false);
+  };
+
+  /** 文件页可以单独进：没连就顺手连上，连上直接落在文件面板 */
+  const goFiles = () => {
+    setMode("files");
+    if (open) { setFilesMounted(true); return; }
+    if (!connecting && conn.protocol !== "ftp" && (isKey || saved)) void connect(true);
+  };
+
+  const connecting = phase.kind === "connecting";
+  // 记过凭据 / 密钥认证时可以空手连
+  const canConnect = isKey || saved || password !== "";
+
+  /**
+   * 连着的时候换编码：告诉引擎一声，下一块输出就按新的解。
+   * 顺手把选择存回这条连接的配置，下次开就是对的，不用每次改。
+   */
+  /** 会话日志：把这条会话的输出抄一份到文件里，事后能翻能 grep */
+  const toggleLog = async () => {
+    if (!open) return;
+    if (logging) {
+      await invoke("ssh_log_stop", { sessionId: phase.sessionId }).catch(() => {});
+      setLogging(false);
+      return;
+    }
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const name = `${conn.name || conn.host}-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.log`;
+    const path = await save({
+      title: "会话日志存到哪儿",
+      defaultPath: name.replace(/[\\/:*?"<>|]/g, "_"),
+      filters: [{ name: "日志", extensions: ["log", "txt"] }],
+    }).catch(() => null);
+    if (!path) return;
+    try {
+      await invoke("ssh_log_start", { sessionId: phase.sessionId, path });
+      setLogErr(null);
+      setLogging(true);
+    } catch (e) {
+      const text = e && typeof e === "object" && "message" in e ? String((e as { message: string }).message) : String(e);
+      setLogErr(text);
+    }
+  };
+
+  const switchEncoding = async (next: string) => {
+    setEncoding(next);
+    if (open) await invoke("ssh_set_encoding", { sessionId: phase.sessionId, encoding: next }).catch(() => {});
+    if ((conn.encoding || DEFAULT_ENCODING) !== next) onSaveConn({ ...conn, encoding: next });
+  };
+
+  return (
+    <div className="session">
+      <div className="session-bar">
+        <span className={`status-dot ${open ? "live" : "down"}`} title={open ? "连着" : "没连上"} />
+        <b>{conn.name}</b>
+        <span className="session-meta">{conn.username}@{conn.host}</span>
+
+        <div className="seg mini">
+          <button type="button" title="终端" className={mode === "term" ? "on" : ""} onClick={() => setMode("term")}>
+            <IconTerminal size={13} />终端
+          </button>
+          <button
+            type="button"
+            title={open ? "文件（SFTP）" : "直接进文件面板，没连的话顺手连上"}
+            className={mode === "files" ? "on" : ""}
+            onClick={goFiles}
+          >
+            <IconFiles size={13} />文件
+          </button>
+          <button
+            type="button"
+            title="端口转发 / SOCKS 代理"
+            className={mode === "tunnel" ? "on" : ""}
+            onClick={() => setMode("tunnel")}
+          >
+            <IconLink size={13} />隧道
+            {(conn.tunnels?.length ?? 0) > 0 && <i className="seg-badge">{conn.tunnels?.length}</i>}
+          </button>
+          <button type="button" title="这条连接的配置" className={mode === "config" ? "on" : ""} onClick={() => setMode("config")}>
+            <IconSettings size={13} />配置
+          </button>
+        </div>
+
+        <span className="foot-spacer" />
+
+        {/* 乱码是当场才看得出来的，所以换编码也得能当场换，不用断开重连 */}
+        {open && (
+          <select
+            className="enc-pick"
+            value={encoding}
+            title="终端字符编码 —— 看到乱码就换一个"
+            aria-label="字符编码"
+            onChange={(e) => void switchEncoding(e.target.value)}
+          >
+            {ENCODINGS.map((one) => (
+              <option key={one.value} value={one.value}>{one.label}</option>
+            ))}
+          </select>
+        )}
+
+        {open && (
+          <button
+            className={`log-btn ${logging ? "on" : ""}`}
+            type="button"
+            onClick={toggleLog}
+            title={logErr ?? (logging ? "正在记录这条会话，点一下停" : "把这条会话的输出记到文件里")}
+          >
+            <span className="log-dot" />
+            {logErr ? "记不了" : logging ? "记录中" : "记录"}
+          </button>
+        )}
+
+        {open ? (
+          <button className="session-close" type="button" onClick={disconnect} title="断开这条连接">
+            <IconX size={14} /> 断开
+          </button>
+        ) : (
+          <button
+            className="btn-primary sm"
+            type="button"
+            disabled={connecting || !canConnect || conn.protocol === "ftp" || !!askAuth}
+            onClick={() => { if (mode === "config") setMode("term"); void connect(); }}
+            title={canConnect ? "连上去" : "先填密码"}
+          >
+            {connecting ? "连接中……" : "连接"}
+          </button>
+        )}
+      </div>
+
+      <div className="session-body" onMouseDown={touch}>
+        {open && (
+          <div className="session-pane" style={{ display: mode === "term" ? "flex" : "none" }}>
+            <Terminal
+              sessionId={phase.sessionId}
+              scheme={termScheme}
+              variant={termVariant}
+              fontSize={termFontSize}
+              divider={termDivider}
+              onActivity={touch}
+            />
+          </div>
+        )}
+
+        {/* 没连上时，终端页和文件页都摆同一张连接卡（配置页照常能看） */}
+        <div className="session-pane" style={{ display: !open && mode !== "config" ? "flex" : "none" }}>
+          {phase.kind === "napped" ? (
+            <div className="connect-panel">
+              <div className="connect-card nap-card">
+                <h2>闲了 {idleMinutes} 分钟，连接先睡了</h2>
+                <p className="dim">切回这个标签会自己接上；现在也能直接叫醒。</p>
+                <button className="btn-primary" type="button" onClick={() => connect(true)}>叫醒它</button>
+              </div>
+            </div>
+          ) : (
+            <div className="connect-panel">
+              {askAuth ? (
+                <AuthAsk
+                  ask={askAuth}
+                  busy={connecting}
+                  onSubmit={answer}
+                  onCancel={dropAuth}
+                />
+              ) : askHost ? (
+                <div className={`connect-card host-key ${askHost.kind === "changed" ? "danger" : ""}`}>
+                  <h2>{askHost.kind === "changed" ? "这台的指纹变了" : "第一次连这台"}</h2>
+                  <p className="dim">
+                    {askHost.kind === "changed"
+                      ? "服务器重装或换过密钥会这样，被人插在中间也会这样。不确定就别点信任，先去问清楚。"
+                      : "核对一下指纹，对得上再信任。信任后会写进 ~/.ssh/known_hosts，跟系统 ssh 共用一份。"}
+                  </p>
+                  <div className="fp-box">
+                    <span>{conn.host}:{conn.port}</span>
+                    <b>{askHost.fingerprint}</b>
+                    <small>{askHost.algo}</small>
+                  </div>
+                  <div className="fp-actions">
+                    <button
+                      className={askHost.kind === "changed" ? "btn-primary danger" : "btn-primary"}
+                      type="button"
+                      onClick={() => connect(false, true)}
+                    >
+                      {askHost.kind === "changed" ? "我确认过，更新指纹" : "信任并连接"}
+                    </button>
+                    <button className="btn-ghost" type="button" onClick={() => setAskHost(null)}>先不连</button>
+                  </div>
+                </div>
+              ) : (
+              <div className="connect-card">
+                {conn.protocol === "ftp" ? (
+                  <p className="dim">FTP 还没接上，先用 SFTP。</p>
+                ) : (
+                  <>
+                    {isKey && (
+                      <div className="key-row">
+                        <IconKey size={15} />
+                        <span className="key-path" title={conn.keyPath}>{conn.keyPath || "未配置私钥路径"}</span>
+                      </div>
+                    )}
+
+                    {saved ? (
+                      <div className="saved-row">
+                        <IconCheck size={15} />
+                        <span>已记住{isKey ? "密码短语" : "密码"}，点连接就走</span>
+                        <button type="button" onClick={forget} title="从系统钥匙串里删掉">忘掉</button>
+                      </div>
+                    ) : isKey ? (
+                      <label className="field">
+                        <span>密码短语（私钥没设就留空）</span>
+                        <div className="pw-input">
+                          <IconLock size={15} />
+                          <input
+                            type="password"
+                            value={passphrase}
+                            placeholder="多数私钥无需密码短语"
+                            onChange={(e) => setPassphrase(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && connect()}
+                          />
+                        </div>
+                      </label>
+                    ) : (
+                      <label className="field">
+                        <span>密码</span>
+                        <div className="pw-input">
+                          <IconLock size={15} />
+                          <input
+                            type="password"
+                            value={password}
+                            autoFocus={active}
+                            placeholder="输一次就够"
+                            onChange={(e) => setPassword(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && connect()}
+                          />
+                        </div>
+                      </label>
+                    )}
+
+                    {!saved && (
+                      <label className="check-row" title="存进系统钥匙串（Windows 凭据管理器 / macOS 钥匙串）">
+                        <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                        <span>记住，下次直接连</span>
+                      </label>
+                    )}
+
+                    {retry ? (
+                      <div className="connect-retry">
+                        <span className="spin" />
+                        <b>{retry.seconds} 秒后自动重连</b>
+                        <small>还会再试 {retry.left} 次</small>
+                        <button type="button" onClick={() => setRetry(null)}>不用了</button>
+                      </div>
+                    ) : phase.kind === "error" && (
+                      <div className="connect-error">
+                        <b>{phase.err.message}</b>
+                        {phase.err.detail && <small>{phase.err.detail}</small>}
+                      </div>
+                    )}
+
+                    <button className="btn-primary" type="button" disabled={connecting || !canConnect} onClick={() => connect()}>
+                      {connecting ? "连接中……" : mode === "files" ? "连上并进文件面板" : "连接"}
+                    </button>
+                    <p className="form-note">
+                      <IconLock size={13} />
+                      勾了记住就交给系统钥匙串保管，我们自己的文件里没有明文。
+                    </p>
+                  </>
+                )}
+              </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 断了也不卸载：传输队列和两边的目录留在那儿，重连回来接着用 */}
+        {filesMounted && (
+          <div className="session-pane" style={{ display: mode === "files" ? "flex" : "none" }}>
+            <SftpPanel
+              sessionId={open ? phase.sessionId : null}
+              connId={conn.id}
+              active={active && mode === "files"}
+              lanes={xferLanes}
+              onActivity={touch}
+              onEditFile={onEditFile}
+            />
+          </div>
+        )}
+
+        <div className="session-pane" style={{ display: mode === "tunnel" ? "flex" : "none" }}>
+          <TunnelPanel
+            sessionId={open ? phase.sessionId : null}
+            tunnels={conn.tunnels ?? []}
+            onChange={(tunnels) => onSaveConn({ ...conn, tunnels })}
+            onActivity={touch}
+          />
+        </div>
+
+        <div className="session-pane" style={{ display: mode === "config" ? "flex" : "none" }}>
+          <ConnectionPage
+            conn={conn}
+            status={open ? "live" : "down"}
+            embedded
+            onSave={onSaveConn}
+            onDelete={onDeleteConn}
+            onDirtyChange={onConfigDirty}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AuthAskProps {
+  ask: AuthPrompts;
+  busy: boolean;
+  onSubmit: (answers: string[]) => void;
+  onCancel: () => void;
+}
+
+/**
+ * 服务器问一句、用户答一句。
+ * 2FA 验证码、到期要改的密码、堡垒机的自定义问题，走的都是这条路
+ * （SSH 的 keyboard-interactive）。问题文字原样照搬服务器的，不自己编。
+ */
+function AuthAsk({ ask, busy, onSubmit, onCancel }: AuthAskProps) {
+  // 服务器每换一组问题就重新来过，别把上一组的答案留在框里
+  const [answers, setAnswers] = useState<string[]>(() => ask.prompts.map(() => ""));
+  useEffect(() => { setAnswers(ask.prompts.map(() => "")); }, [ask]);
+
+  const put = (index: number, value: string) =>
+    setAnswers((old) => old.map((one, i) => (i === index ? value : one)));
+
+  const send = () => { if (!busy) onSubmit(answers); };
+
+  return (
+    <div className="connect-card auth-ask">
+      <h2>{ask.name.trim() || "服务器要验证一下"}</h2>
+      {ask.instructions.trim() && <p className="dim auth-inst">{ask.instructions.trim()}</p>}
+
+      {ask.prompts.map((one, index) => (
+        <label className="field" key={`${one.prompt}-${index}`}>
+          <span>{one.prompt.trim() || "请输入"}</span>
+          <div className="pw-input">
+            {one.echo ? <IconKey size={15} /> : <IconLock size={15} />}
+            <input
+              // echo=true 是验证码这类可以看见的，false 是密码，遮起来
+              type={one.echo ? "text" : "password"}
+              autoFocus={index === 0}
+              autoComplete="off"
+              value={answers[index] ?? ""}
+              onChange={(e) => put(index, e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && send()}
+            />
+          </div>
+        </label>
+      ))}
+
+      <button className="btn-primary" type="button" disabled={busy} onClick={send}>
+        {busy ? "验证中……" : "提交"}
+      </button>
+      <button className="btn-ghost" type="button" onClick={onCancel}>算了，不连了</button>
+      <p className="form-note">
+        <IconLock size={13} />
+        一次性验证码只在这一次连接里用，不会存进钥匙串。
+      </p>
+    </div>
+  );
+}

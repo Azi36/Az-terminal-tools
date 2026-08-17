@@ -1,0 +1,32 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 本地环境
+.env
+.env.local
+*.local
+
+# 更新签名的私钥：丢了就没法给老用户推更新，泄漏了别人就能冒充我们推更新。
+# 它本来就该放在仓库外（~/.tauri/），这几条只是防手滑。
+*.key
+!**/*.key.pub
+tauri-private.key*
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 打包出来的安装包
+*.msi
+*.exe
+*.dmg
+*.app
+*.AppImage
+*.deb

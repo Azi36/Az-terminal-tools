@@ -1,0 +1,47 @@
+name: 通知新版
+
+# 注意触发时机：是 Release **真的发布**了才通知，不是打标签时。
+# 出包那个 workflow 建的是草稿，草稿阶段推提示等于告诉用户一个还下不到的版本。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要通知的 tag（例如 v0.7.0）"
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # 只推一个版本号 + 更新说明到京东云；安装包本身还在 GitHub。
+      # 国内用户靠这条才知道有更新——api.github.com 在国内经常拉不动，
+      # 拉不动的后果不是"提示晚了"，是他们根本不知道有新版。
+      - name: 推送版本提示
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_KEY: ${{ secrets.AZI_RELEASE_KEY }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_KEY:-}" ]; then
+            echo "没配 AZI_RELEASE_KEY，跳过 —— 发版本身不受影响，只是国内用户收不到提示"
+            exit 0
+          fi
+
+          VERSION="${TAG#v}"
+          NOTES=$(gh release view "$TAG" --repo "$REPO" --json body -q .body || echo "")
+
+          jq -n --arg v "$VERSION" --arg n "$NOTES" \
+                --arg u "https://github.com/$REPO/releases/tag/$TAG" \
+                '{version:$v, notes:$n, url:$u}' \
+            | curl -fsS -X POST "https://api.azi36.com/release/az-term" \
+                -H "X-Azi-Key: $RELEASE_KEY" \
+                -H "content-type: application/json" \
+                --data-binary @-
+
+          echo "已通知京东云：$VERSION"
