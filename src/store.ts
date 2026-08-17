@@ -2,9 +2,12 @@ import type { Bookmark, Connection, Note, Snippet } from "./types";
 
 /**
  * 本地存储。
- * 连接只存元数据（不含密码/私钥）；指令、备忘、收藏都是纯本地内容。
+ * 连接只存元数据；指令、备忘、收藏都是纯本地内容。
  * localStorage 在 Tauri webview 里是本地磁盘持久化，不出这台机器、不触网。
- * 后续可平滑换成 Tauri store 插件 + keyring 加密敏感字段。
+ *
+ * 凭据不走这里：密码和密码短语在系统钥匙串（src-tauri/src/creds.rs），
+ * 前端只能问「存过没有」，拿不到明文。所以这儿的东西整体导出成 JSON
+ * 给用户搬家（src/backup.ts）是安全的。
  */
 
 const KEYS = {

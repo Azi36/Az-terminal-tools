@@ -24,8 +24,9 @@ export interface Connection {
   pinned?: boolean;
   /** 上次连上的时间，用来把常用的排前面 */
   lastUsedAt?: number;
-  // 注意：密码 / 私钥内容 / 密码短语都不进本地存储，连接时才用。
-  // 后续版本接系统钥匙串（keyring）加密后才落盘敏感字段。
+  // 注意：密码 / 私钥内容 / 密码短语一个都不在这儿。
+  // 密码和密码短语存系统钥匙串（见 src-tauri/src/creds.rs），私钥只存路径、
+  // 内容连接时才读。所以这个对象整体导出成 JSON 也不会带出任何凭据。
 }
 
 /**
@@ -81,12 +82,12 @@ export interface Bookmark {
   label: string;
 }
 
-/** 会话标签里的三页 */
-export type SessionMode = "term" | "files" | "config";
+/** 会话标签里的四页 */
+export type SessionMode = "term" | "files" | "tunnel" | "config";
 
 /** 工作区标签页 */
 export type Tab =
-  /** 一台服务器一个标签，终端 / 文件 / 配置都在里面 */
+  /** 一台服务器一个标签，终端 / 文件 / 隧道 / 配置都在里面；同一台可以开多个 */
   | { id: string; kind: "session"; connId: string; initialMode?: SessionMode; autoConnect?: boolean }
   /** 只用于「新建连接」，存下来就变成会话标签 */
   | { id: string; kind: "conn"; connId: null }

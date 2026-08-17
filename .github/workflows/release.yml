@@ -47,8 +47,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # —— 自动更新的签名 ——
-          # 没配这两个 secret 的话，包照样出，只是不带更新签名（老用户收不到自动更新）。
-          # 私钥是 `npm run tauri signer generate` 生成的那个 .key 文件的**内容**。
+          # 这两个是**必需**的，不是可选：tauri.conf.json 里配了 pubkey 且开了
+          # createUpdaterArtifacts，打包时找不到私钥会直接报
+          # 「A public key has been found, but no private key」然后失败，
+          # 不会退而求其次出个没签名的包。
+          # 私钥是 `npm run tauri signer generate` 生成的那个 .key 文件的**内容**，
+          # 密码是生成时设的那串（这把私钥是加密的，密码不能留空）。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # —— macOS 代码签名 + 公证 ——

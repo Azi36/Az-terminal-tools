@@ -23,7 +23,14 @@ Azi36 家族第 002 号产品 · 桌面版（Windows / macOS）· [term.azi36.co
 
 不要账号、不传云、不过期、不锁功能。凭据交给系统钥匙串（Windows 凭据管理器 / macOS 钥匙串），配置文件里没有明文；主机指纹用标准 `~/.ssh/known_hosts`，跟系统 ssh 共用一份。导出的备份里也**不含密码** —— 明文导出会把「不落明文」这件事作废。
 
-检查更新是你点了才查，不后台连网。
+**唯一一次主动联网**：开起来 4 秒后，向 `api.azi36.com` 发一个 GET 问「有没有新版」。
+不带任何身份标识、不上报任何东西，拿不到就当没有。设置里「新版提示」可以关掉，
+关了之后只有你点「检查更新」才会查。
+
+更新包本身从 GitHub Release 下载，带 minisign 签名校验。检查和下载分开走，是因为
+api.github.com 在国内经常拉不动 —— 拉不动的后果不是提示晚了，是你根本不知道有新版。
+
+除此之外不联网：你的电脑直连你的服务器，中间没有我们的服务器。
 
 ## 自己跑
 
@@ -39,12 +46,23 @@ npm run tauri build    # 出安装包
 
 打个 `v*` 标签，CI 出 Windows / macOS 安装包并发 Release 草稿。
 
-自动更新要签名，仓库里得配两个 secret：
+自动更新要签名，仓库里得配两个 secret，**两个都必须有值**：
 
 - `TAURI_SIGNING_PRIVATE_KEY` —— `npm run tauri signer generate` 生成的私钥文件**内容**
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` —— 私钥密码，没设就留空
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` —— 生成私钥时设的密码
 
-公钥已经在 `src-tauri/tauri.conf.json` 里。**私钥别进仓库**，丢了就没法给老用户推更新。
+公钥已经在 `src-tauri/tauri.conf.json` 里，是公开的。**私钥和密码都别进仓库**——
+两样凑齐就能以你的名义给所有用户推更新。丢了也麻烦：老用户只认这一个公钥，
+换新密钥对他们来说等于"签名不对"，只能手动下新包。
+
+自己从头搭一套的话：
+
+```bash
+npm run tauri signer generate -w ~/.tauri/你的名字.key --password '一串长密码'
+```
+
+把打印出来的公钥填进 `tauri.conf.json` 的 `plugins.updater.pubkey`，
+私钥内容和密码分别放进上面两个 secret。
 
 代码签名（可选，配了才签，没配就出没签名的包）：macOS 用 `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`。
 

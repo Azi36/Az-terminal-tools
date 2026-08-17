@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use russh::client::{self, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::*;
-use russh::{ChannelMsg, Disconnect};
+use russh::ChannelMsg;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
@@ -897,10 +897,6 @@ pub async fn ssh_close(
     crate::sftp::drop_session(&app, &session_id).await;
     Ok(())
 }
-
-// 保留 Disconnect 引用以备后续优雅退出用
-#[allow(dead_code)]
-fn _keep(_: Disconnect) {}
 
 #[cfg(test)]
 mod tests {
