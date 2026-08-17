@@ -65,7 +65,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Az-term ${{ github.ref_name }}"
+          # 展示用的名字跟官网统一成 AzTerm；
+          # 安装包里的 productName 没动，那个改了会牵动安装包标识和更新器匹配
+          releaseName: "AzTerm ${{ github.ref_name }}"
           releaseBody: "Windows 装 .msi，macOS 装 .dmg。"
           releaseDraft: true
           prerelease: false

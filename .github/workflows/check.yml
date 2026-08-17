@@ -1,10 +1,18 @@
 name: 检查
 
-# 每次推代码和开 PR 都跑一遍，别等到打包那天才发现编译不过
+# 每次推代码和开 PR 都跑一遍，别等到打包那天才发现编译不过。
+# 只改官网 / 文档的提交不跑：那些改动碰不到 Rust 和前端源码，
+# 白跑三分多钟编译，还多一次撞上 action 下载抽风的机会（2026-08-17 就这么挂过一回）。
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
 
 jobs:
   check:
