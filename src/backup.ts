@@ -14,7 +14,7 @@ import {
   saveSnippet,
   type AppSettings,
 } from "./store";
-import { COLORS, DEFAULT_ENCODING, DEFAULT_GROUP, type Bookmark, type Connection, type Note, type Snippet } from "./types";
+import { COLORS, DEFAULT_ENCODING, DEFAULT_GROUP, DEFAULT_USER, type Bookmark, type Connection, type Note, type Snippet } from "./types";
 
 /**
  * 备份文件。
@@ -56,7 +56,7 @@ const stamp = () => {
 /** 导出：选个位置，把上面那堆写成 JSON */
 export async function exportAll(): Promise<string | null> {
   const path = await save({
-    title: "导出 Az-term 配置",
+    title: "导出 AzTerm 配置",
     defaultPath: `az-term-备份-${stamp()}.json`,
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -86,8 +86,9 @@ const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
  */
 function cleanConn(raw: Record<string, unknown>): Connection | null {
   const host = typeof raw.host === "string" ? raw.host.trim() : "";
-  const username = typeof raw.username === "string" ? raw.username.trim() : "";
-  if (!host || !username) return null;
+  // 用户名空着按 root（跟新建页一个规矩），别为这个把整条连接丢掉
+  const username = (typeof raw.username === "string" ? raw.username.trim() : "") || DEFAULT_USER;
+  if (!host) return null;
   const port = Number(raw.port);
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
@@ -113,7 +114,7 @@ function cleanConn(raw: Record<string, unknown>): Connection | null {
  */
 export async function importAll(): Promise<ImportResult | null> {
   const picked = await open({
-    title: "导入 Az-term 配置",
+    title: "导入 AzTerm 配置",
     multiple: false,
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -129,7 +130,7 @@ export async function importAll(): Promise<ImportResult | null> {
   }
   const backup = data as Partial<Backup>;
   if (!backup || backup.app !== "az-term") {
-    throw new Error("这不像是 Az-term 导出的备份文件");
+    throw new Error("这不像是 AzTerm 导出的备份文件");
   }
 
   const result: ImportResult = { connections: 0, snippets: 0, notes: 0, bookmarks: 0, settings: false };

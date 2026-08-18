@@ -102,6 +102,13 @@ const ROW_H = 28;
 const VIRTUAL_FROM = 200;
 
 const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? path;
+/** child 是不是就在 parent 里面（含 parent 自己）；按整段比，不是纯前缀 */
+function under(parent: string, child: string): boolean {
+  if (parent === child) return true;
+  const sep = parent.includes("\\") ? "\\" : "/";
+  return child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
 const parentRemote = (path: string) => path.replace(/\/[^/]*$/, "") || "/";
 
 /** 把路径拆成可点的各级：/var/log → [/, /var, /var/log]；C:\a\b 同理 */
@@ -127,7 +134,8 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
   const [local, setLocal] = useState<FsListing | null>(null);
   const [remote, setRemote] = useState<FsListing | null>(null);
   const [sel, setSel] = useState<Record<Side, string[]>>({ local: [], remote: [] });
-  const [err, setErr] = useState<{ message: string; detail?: string | null } | null>(null);
+  /** 底部那条消息。tone=info 是「知道一下」，不带就是真出错了，画成红的 */
+  const [err, setErr] = useState<{ message: string; detail?: string | null; tone?: "info" | "bad" } | null>(null);
   const [progress, setProgress] = useState<Live>({});
   /** 传输速度（字节/秒）和预计剩余秒数，由下面的采样算出来 */
   const [rate, setRate] = useState<{ speed: number; eta: number } | null>(null);
@@ -446,6 +454,14 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     return fallback ? [fallback] : [];
   };
 
+  /**
+   * 「在这一行上」的操作认哪些东西：这一行本来就在选中里，就是整批；
+   * 不在选中里，就只有它自己 —— 跟资源管理器一个规矩。
+   * 不这么分的话，「选了 A、B，再点 C 那行的删除」删掉的会是 A、B。
+   */
+  const entriesFor = (side: Side, entry: FsEntry): FsEntry[] =>
+    sel[side].includes(entry.path) ? entriesOf(side, entry) : [entry];
+
   const upload = async (entries: FsEntry[]) => {
     if (!remote || entries.length === 0) return;
     try {
@@ -487,7 +503,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
     // 按住的这一项不在选中里 → 拖的就是它，不是「上次选中的那些」。
     // 跟资源管理器一个手感；否则「选了 A，按住 B 拖过去」传的会是 A。
-    const held = sel[side].includes(entry.path) ? entriesOf(side, entry) : [entry];
+    const held = entriesFor(side, entry);
     dragRef.current = { from: side, entries: held, x: e.clientX, y: e.clientY, live: false };
   };
 
@@ -576,13 +592,13 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       if (mod && e.key.toLowerCase() === "c" && picked.length) {
         e.preventDefault();
         clipRef.current = { side, entries: picked, cut: false };
-        setErr({ message: `记下 ${picked.length} 项 · 同一栏 Ctrl+V 就地复制，对面那栏 Ctrl+V 传过去` });
+        setErr({ tone: "info", message: `记下 ${picked.length} 项 · 同一栏 Ctrl+V 就地复制，对面那栏 Ctrl+V 传过去` });
         return;
       }
       if (mod && e.key.toLowerCase() === "x" && picked.length) {
         e.preventDefault();
         clipRef.current = { side, entries: picked, cut: true };
-        setErr({ message: `剪下 ${picked.length} 项 · 换个目录按 Ctrl+V 移过去` });
+        setErr({ tone: "info", message: `剪下 ${picked.length} 项 · 换个目录按 Ctrl+V 移过去` });
         return;
       }
       if (mod && e.key.toLowerCase() === "v") {
@@ -746,6 +762,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     else await download(held.entries);
     if (held.cut) {
       setErr({
+        tone: "info",
         message: "跨两栏只传不删",
         detail: `${held.entries.length} 项正在传过去。源文件原样留着 —— 传完自己核对一下再删，别让程序替你决定。`,
       });
@@ -764,8 +781,9 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     const bad: string[] = [];
     for (let i = 0; i < held.entries.length; i += 1) {
       const entry = held.entries[i];
-      // 把一个目录挪进它自己里面，等于把它弄丢
-      if (entry.kind === "dir" && listing.path.startsWith(entry.path)) {
+      // 把一个目录挪进它自己里面，等于把它弄丢。
+      // 按「整段」比：/a/bc 不在 /a/b 里面，纯 startsWith 会把它错拦下来
+      if (entry.kind === "dir" && under(entry.path, listing.path)) {
         bad.push(`${entry.name}：不能放进它自己里面`);
         continue;
       }
@@ -818,7 +836,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
 
   // —— 右键菜单 ——
   const rowMenu = (side: Side, entry: FsEntry, e: React.MouseEvent) => {
-    const picked = entriesOf(side, entry);
+    const picked = entriesFor(side, entry);
     const many = picked.length > 1;
     const items: MenuEntry[] = [];
 
@@ -839,7 +857,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       hint: "Ctrl+C",
       onClick: () => {
         clipRef.current = { side, entries: picked, cut: false };
-        setErr({ message: `记下 ${picked.length} 项 · 同一栏 Ctrl+V 就地复制，对面那栏 Ctrl+V 传过去` });
+        setErr({ tone: "info", message: `记下 ${picked.length} 项 · 同一栏 Ctrl+V 就地复制，对面那栏 Ctrl+V 传过去` });
       },
     });
     items.push({
@@ -847,7 +865,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       hint: "Ctrl+X",
       onClick: () => {
         clipRef.current = { side, entries: picked, cut: true };
-        setErr({ message: `剪下 ${picked.length} 项 · 换个目录按 Ctrl+V 移过去` });
+        setErr({ tone: "info", message: `剪下 ${picked.length} 项 · 换个目录按 Ctrl+V 移过去` });
       },
     });
     if (clipRef.current?.side === side) {
@@ -936,7 +954,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         onMkdir={() => mkdir("local")}
         onTouch={() => touch("local")}
         onRename={(entry) => rename("local", entry)}
-        onRemove={(entry) => remove("local", entriesOf("local", entry))}
+        onRemove={(entry) => remove("local", entriesFor("local", entry))}
         onEdit={(entry) => onEditFile("local", entry.path)}
         onRowMenu={(entry, e) => rowMenu("local", entry, e)}
         onPaneMenu={(e) => paneMenu("local", e)}
@@ -946,7 +964,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         dragging={!!drag}
         dropTarget={drag?.to === "local"}
         dropDir={drag?.to === "local" ? drag.dir : null}
-        onTransfer={(entry) => upload(entriesOf("local", entry))}
+        onTransfer={(entry) => upload(entriesFor("local", entry))}
         onTransferSelected={() => upload(entriesOf("local"))}
         onAddMark={() => addMark("local")}
         onDropMark={dropMark}
@@ -970,7 +988,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         onMkdir={() => mkdir("remote")}
         onTouch={() => touch("remote")}
         onRename={(entry) => rename("remote", entry)}
-        onRemove={(entry) => remove("remote", entriesOf("remote", entry))}
+        onRemove={(entry) => remove("remote", entriesFor("remote", entry))}
         onEdit={(entry) => onEditFile("remote", entry.path)}
         onRowMenu={(entry, e) => rowMenu("remote", entry, e)}
         onPaneMenu={(e) => paneMenu("remote", e)}
@@ -980,14 +998,26 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         dragging={!!drag}
         dropTarget={drag?.to === "remote"}
         dropDir={drag?.to === "remote" ? drag.dir : null}
-        onTransfer={(entry) => download(entriesOf("remote", entry))}
+        onTransfer={(entry) => download(entriesFor("remote", entry))}
         onTransferSelected={() => download(entriesOf("remote"))}
         onAddMark={() => addMark("remote")}
         onDropMark={dropMark}
         onSync={() => void sync2("remote")}
       />
 
-      {(stats.total > 0 || err || busy) && (
+      {/* 消息自己占一行：传输跑着的时候出了错，也得看得见 */}
+      {err && (
+        <div className={`sftp-status note ${err.tone === "info" ? "info" : "bad"}`}>
+          <span className={err.tone === "info" ? "xfer-tip" : "xfer-err"}>{err.message}</span>
+          {err.detail && <small>{err.detail}</small>}
+          <span className="foot-spacer" />
+          <button className="xfer-close" type="button" onClick={() => setErr(null)} aria-label="知道了" title="知道了">
+            <IconX size={13} />
+          </button>
+        </div>
+      )}
+
+      {(stats.total > 0 || busy) && (
         <div className="sftp-status">
           {busy ? (
             <>
@@ -1025,23 +1055,12 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
               <span className="foot-spacer" />
               {stats.fail > 0 && <button className="xfer-act" type="button" onClick={retryFailed}>重试失败</button>}
               {stats.left > 0 ? (
-                <button className="xfer-act" type="button" onClick={cancelQueue} title="当前这个传完就停">取消</button>
+                <button className="xfer-act" type="button" onClick={cancelQueue} title="排队的丢掉，正在传的也叫停（半截文件由引擎收干净）">取消</button>
               ) : (
                 <button className="xfer-act" type="button" onClick={clearDone}>清空</button>
               )}
             </>
-          ) : (
-            err && (
-              <>
-                <span className="xfer-err">{err.message}</span>
-                {err.detail && <small>{err.detail}</small>}
-                <span className="foot-spacer" />
-                <button className="xfer-close" type="button" onClick={() => setErr(null)} aria-label="知道了" title="知道了">
-                  <IconX size={13} />
-                </button>
-              </>
-            )
-          )}
+          ) : null}
         </div>
       )}
 
