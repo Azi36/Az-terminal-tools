@@ -12,7 +12,7 @@ interface ConnectionListProps {
   statusOf: (connId: string) => ConnStatus;
   /** 正在看配置页的那条 */
   inspectingId?: string | null;
-  /** 单击：开配置页，不动网络 */
+  /** 单击：开这台的标签，停在连接卡上，不动网络 */
   onInspect: (conn: Connection) => void;
   /** 双击：直接连（落在终端） */
   onOpen: (conn: Connection) => void;
@@ -92,7 +92,7 @@ export function ConnectionList({
                 onContextMenu={(e) => openMenu(conn, e)}
                 role="button"
                 tabIndex={0}
-                title={`${conn.username}@${conn.host}:${conn.port}\n单击看配置，双击直接连`}
+                title={`${conn.username}@${conn.host}:${conn.port}\n单击打开标签，双击直接连`}
                 onKeyDown={(e) => e.key === "Enter" && onOpen(conn)}
               >
                 <span

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Dialog } from "../components/Dialog";
 import { IconEdit, IconPlay, IconPlus, IconTrash, IconX } from "../components/icons";
 import { newId } from "../store";
 import { TUNNEL_KINDS, type Tunnel, type TunnelKind } from "../types";
@@ -49,6 +50,8 @@ function explain(one: Tunnel): string {
 export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: TunnelPanelProps) {
   const [live, setLive] = useState<Record<string, Live>>({});
   const [editing, setEditing] = useState<Tunnel | null>(null);
+  /** 等确认要删的那条 */
+  const [killing, setKilling] = useState<Tunnel | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const beat = useRef(onActivity);
@@ -126,14 +129,16 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
   }, [sessionId, tunnels, start]);
 
   const save = (one: Tunnel) => {
-    const rest = tunnels.filter((old) => old.id !== one.id);
-    onChange([...rest, one]);
+    // 改一条不该让它跳到列表末尾 —— 原地换掉，新的才追加
+    const known = tunnels.some((old) => old.id === one.id);
+    onChange(known ? tunnels.map((old) => (old.id === one.id ? one : old)) : [...tunnels, one]);
     setEditing(null);
   };
 
   const remove = (one: Tunnel) => {
     if (live[one.id]?.on) void stop(one);
     onChange(tunnels.filter((old) => old.id !== one.id));
+    setKilling(null);
   };
 
   return (
@@ -185,7 +190,7 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
                         <button className="icon-btn sm" type="button" aria-label="改" title="改" onClick={() => setEditing(one)}>
                           <IconEdit size={14} />
                         </button>
-                        <button className="icon-btn sm" type="button" aria-label="删" title="删掉这条" onClick={() => remove(one)}>
+                        <button className="icon-btn sm" type="button" aria-label="删" title="删掉这条" onClick={() => setKilling(one)}>
                           <IconTrash size={14} />
                         </button>
                       </div>
@@ -203,6 +208,19 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
           </section>
         </div>
       </div>
+
+      {killing && (
+        <Dialog
+          title="删掉这条转发"
+          message={`${explain(killing)}
+
+${live[killing.id]?.on ? "它现在开着，删之前会先停掉。" : "删了要用得重新配一遍。"}`}
+          confirmText="删"
+          danger
+          onConfirm={() => remove(killing)}
+          onClose={() => setKilling(null)}
+        />
+      )}
 
       {editing && (
         <TunnelForm

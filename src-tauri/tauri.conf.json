@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Azi-Terminal",
+        "title": "AzTerm",
         "width": 1280,
         "height": 820,
         "minWidth": 900,

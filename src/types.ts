@@ -85,6 +85,16 @@ export interface Bookmark {
 /** 会话标签里的四页 */
 export type SessionMode = "term" | "files" | "tunnel" | "config";
 
+/**
+ * 叫醒一个已经开着的会话标签：去哪一页、要不要顺手连上。
+ * 侧栏第二次点同一台机器时用，标签靠 seq 认出「这是新的一次」。
+ */
+export interface Wake {
+  seq: number;
+  mode: SessionMode;
+  connect: boolean;
+}
+
 /** 工作区标签页 */
 export type Tab =
   /** 一台服务器一个标签，终端 / 文件 / 隧道 / 配置都在里面；同一台可以开多个 */
@@ -143,4 +153,7 @@ export const DEFAULT_ENCODING = "utf-8";
 export const COLORS = ["#1e40d8", "#00953a", "#d96716", "#7c3aed", "#d63384", "#0aa5a5"];
 
 export const DEFAULT_GROUP = "默认";
+
+/** 用户名留空就按它连 —— 十有八九就是 root，没必要逼着人敲一遍 */
+export const DEFAULT_USER = "root";
 export const DEFAULT_TAG = "常用";

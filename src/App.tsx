@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Logo } from "./components/Logo";
 import {
   IconChevronDown,
@@ -26,6 +28,7 @@ import {
   deleteConnection,
   deleteNote,
   deleteSnippet,
+  forgetScope,
   loadConnections,
   loadNotes,
   loadOpenTabs,
@@ -40,8 +43,9 @@ import {
   type AppSettings,
   type SavedTab,
 } from "./store";
+import { dropSecret } from "./secrets";
 import { checkRelease, type Release } from "./update";
-import type { Connection, Note, SessionMode, Snippet, Tab } from "./types";
+import type { Connection, Note, SessionMode, Snippet, Tab, Wake } from "./types";
 
 type Drawer = "conns" | "snippets" | "notes";
 
@@ -64,8 +68,15 @@ function App() {
   const [activeTab, setActiveTab] = useState<string | null>(null);
   /** tabId -> 活着的 SSH 会话 id（没连上就是 null） */
   const [sessions, setSessions] = useState<Record<string, string | null>>({});
+  /** tabId -> 会话标签停在哪一页，下次开应用照着摆回来 */
+  const [tabModes, setTabModes] = useState<Record<string, SessionMode>>({});
   /** 标签有没有没保存的改动（编辑器、连接配置） */
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
+  /**
+   * 侧栏又点了一次已经开着的那台：让那个标签切到对应的页、该连就连。
+   * 不这样的话，先单击开了标签、再双击就只是切过去，连接那一下没人执行。
+   */
+  const [wakes, setWakes] = useState<Record<string, Wake>>({});
 
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
@@ -151,13 +162,38 @@ function App() {
     if (restoring.current) { restoring.current = false; return; }
     saveOpenTabs(
       tabs.flatMap<SavedTab>((tab) => {
-        if (tab.kind === "session") return [{ kind: "session", connId: tab.connId }];
+        if (tab.kind === "session") return [{ kind: "session", connId: tab.connId, mode: tabModes[tab.id] }];
         if (tab.kind === "note") return [{ kind: "note", noteId: tab.noteId }];
         if (tab.kind === "settings") return [{ kind: "settings" }];
         return [];
       }),
     );
-  }, [tabs]);
+  }, [tabs, tabModes]);
+
+  // 关窗口前拦一句：编辑器里没保存的内容、正跑着的会话，关掉就没了。
+  // 拦下来之后必须自己 destroy()，否则窗口关不掉 —— 权限在 capabilities/default.json。
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let un: UnlistenFn | undefined;
+    win
+      .onCloseRequested((event) => {
+        const unsaved = Object.values(dirtyRef.current).filter(Boolean).length;
+        const live = Object.values(sessionsRef.current).filter(Boolean).length;
+        // 没什么可丢的就别拦，正常关
+        if (unsaved === 0 && live === 0) return;
+        event.preventDefault();
+        const parts = [unsaved > 0 ? `${unsaved} 个标签没保存` : "", live > 0 ? `${live} 条会话连着` : ""].filter(Boolean);
+        setDialog({
+          title: "关掉 AzTerm？",
+          message: `还有 ${parts.join(" · ")}。关了改动就没了，会话也会断。`,
+          confirmText: "关掉",
+          danger: true,
+          onConfirm: () => void win.destroy(),
+        });
+      })
+      .then((fn) => (un = fn));
+    return () => un?.();
+  }, []);
 
   // 屏蔽 webview 自带的右键菜单（重新加载 / 查看源代码），一律用我们自己的
   useEffect(() => {
@@ -277,6 +313,16 @@ function App() {
     }
     sessionsRef.current = nextSessions;
     dirtyRef.current = nextDirty;
+    setWakes((map) => {
+      const next = { ...map };
+      for (const dead of gone) delete next[dead];
+      return next;
+    });
+    setTabModes((map) => {
+      const next = { ...map };
+      for (const dead of gone) delete next[dead];
+      return next;
+    });
 
     setTabs(rest);
     setSessions(nextSessions);
@@ -343,17 +389,29 @@ function App() {
     return list.length > 0 ? "down" : "idle";
   }, [tabs, sessions]);
 
-  /** 单击：开这台服务器的标签、停在配置页，不碰网络 */
+  const wake = (tabId: string, mode: SessionMode, connect: boolean) => {
+    focusTab(tabId);
+    setWakes((map) => ({ ...map, [tabId]: { seq: (map[tabId]?.seq ?? 0) + 1, mode, connect } }));
+  };
+
+  /** 单击：开这台服务器的标签、停在连接卡上，不碰网络 */
   const openConnConfig = (conn: Connection) => {
     const existing = tabsOfConn(conn.id);
     if (existing.length > 0) { focusTab(existing[existing.length - 1].id); return; }
+    openTab({ id: newId(), kind: "session", connId: conn.id, initialMode: "term", autoConnect: false });
+  };
+
+  /** 配置：进这台的配置页，同样不碰网络 */
+  const openConnEdit = (conn: Connection) => {
+    const existing = tabsOfConn(conn.id);
+    if (existing.length > 0) { wake(existing[existing.length - 1].id, "config", false); return; }
     openTab({ id: newId(), kind: "session", connId: conn.id, initialMode: "config", autoConnect: false });
   };
 
-  /** 双击：这台已经开着就切过去，别闷声再开一个 */
+  /** 双击：这台已经开着就切过去顺手连上，别闷声再开一个 */
   const openConn = (conn: Connection) => {
     const existing = tabsOfConn(conn.id);
-    if (existing.length > 0) { focusTab(existing[existing.length - 1].id); return; }
+    if (existing.length > 0) { wake(existing[existing.length - 1].id, "term", true); return; }
     openTab({ id: newId(), kind: "session", connId: conn.id, initialMode: "term", autoConnect: true });
   };
 
@@ -367,7 +425,7 @@ function App() {
   /** 直接开文件面板：连上就落在 SFTP 那页，不用先经过终端 */
   const openConnFiles = (conn: Connection) => {
     const existing = tabsOfConn(conn.id);
-    if (existing.length > 0) { focusTab(existing[existing.length - 1].id); return; }
+    if (existing.length > 0) { wake(existing[existing.length - 1].id, "files", true); return; }
     openTab({ id: newId(), kind: "session", connId: conn.id, initialMode: "files", autoConnect: true });
   };
 
@@ -380,13 +438,21 @@ function App() {
 
   const saveConn = (conn: Connection) => setConnections(saveConnection(conn));
 
-  const createConnFromTab = (tabId: string, conn: Connection) => {
+  /** 新建页存下来：这个标签就地变成那台服务器的会话标签 */
+  const createConnFromTab = (tabId: string, conn: Connection, connect = false) => {
     setConnections(saveConnection(conn));
     markDirty(tabId, false);
     setTabs((list) =>
       list.map((tab) =>
         tab.id === tabId
-          ? { id: tab.id, kind: "session", connId: conn.id, initialMode: "config", autoConnect: false }
+          ? {
+              id: tab.id,
+              kind: "session",
+              connId: conn.id,
+              // 「创建并连接」落在终端页；只创建的停在配置页，不碰网络
+              initialMode: connect ? "term" : "config",
+              autoConnect: connect,
+            }
           : tab,
       ),
     );
@@ -395,13 +461,27 @@ function App() {
   const togglePin = (conn: Connection) => setConnections(saveConnection({ ...conn, pinned: !conn.pinned }));
 
   const handleDeleteConn = (conn: Connection) => {
+    // 有连接拿它当跳板机的话，得先说清楚 —— 删完那几条就成直连了
+    const riders = connections.filter((one) => one.jumpId === conn.id);
     setDialog({
       title: `删除连接「${conn.name}」`,
-      message: "只删本机这条记录，服务器上什么都不动。",
+      message: riders.length
+        ? `只删本机这条记录，服务器上什么都不动。
+
+注意：${riders
+            .map((one) => one.name)
+            .join("、")} 拿它当跳板机，删了会改成直连 —— 要还想走跳板，回那几条里重新指一台。`
+        : "只删本机这条记录，服务器上什么都不动。",
       confirmText: "删",
       danger: true,
       onConfirm: () => {
-        setConnections(deleteConnection(conn.id));
+        dropSecret(conn.id);
+        // 收藏目录和「上次待的目录」跟着这条连接走，一起清掉
+        forgetScope(conn.id);
+        let list = deleteConnection(conn.id);
+        // 悬空的跳板机引用最危险：本该过堡垒机的连接会闷声直连，这儿明确抹掉
+        for (const one of riders) list = saveConnection({ ...one, jumpId: undefined });
+        setConnections(list);
         closeTabsOf((tab) => tab.kind === "session" && tab.connId === conn.id);
       },
     });
@@ -519,6 +599,9 @@ function App() {
 
   const openNoteIds = tabs.filter((tab) => tab.kind === "note").map((tab) => (tab as { noteId: string }).noteId);
 
+  /** 此刻真连着的会话数：设置页要拿它提醒「重启会断」 */
+  const liveCount = Object.values(sessions).filter(Boolean).length;
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -587,7 +670,7 @@ function App() {
                     onOpen={openConn}
                     onOpenAnother={openAnother}
                     onOpenFiles={openConnFiles}
-                    onEdit={openConnConfig}
+                    onEdit={openConnEdit}
                     onDelete={handleDeleteConn}
                     onTogglePin={togglePin}
                   />
@@ -682,6 +765,8 @@ function App() {
                   autoReconnect={settings.autoReconnect}
                   initialMode={tab.initialMode}
                   autoConnect={tab.autoConnect}
+                  wake={wakes[tab.id]}
+                  onMode={(next) => setTabModes((map) => (map[tab.id] === next ? map : { ...map, [tab.id]: next }))}
                   jump={conn.jumpId ? connections.find((one) => one.id === conn.jumpId) ?? null : null}
                   onSession={(sessionId) => handleSession(tab.id, sessionId)}
                   onEditFile={(side, path) => openEditor(tab.id, side, path)}
@@ -697,7 +782,7 @@ function App() {
                 <ConnectionPage
                   conn={null}
                   status="idle"
-                  onSave={(next) => createConnFromTab(tab.id, next)}
+                  onSave={(next, connect) => createConnFromTab(tab.id, next, connect)}
                   onDelete={handleDeleteConn}
                   onDirtyChange={(dirty) => markDirty(tab.id, dirty)}
                   onClose={() => closeTab(tab.id)}
@@ -729,6 +814,7 @@ function App() {
                   updateNotice={settings.updateNotice}
                   onUpdateNoticeChange={(updateNotice) => changeSettings({ updateNotice })}
                   fresh={fresh}
+                  liveSessions={liveCount}
                   onDataChanged={reloadAll}
                   onClose={() => closeTab(tab.id)}
                   version={version}
@@ -763,9 +849,9 @@ function App() {
           {tabs.length === 0 && (
             <div className="welcome">
               <span className="welcome-mark"><Logo size={56} /></span>
-              <h1>Azi<span>-Terminal</span></h1>
+              <h1>Az<span>Term</span></h1>
               <p>SSH · SFTP · 指令库 · 备忘录，免费无账号不过期。</p>
-              <p className="dim">v{version} —— 左边单击看配置，双击直接连。</p>
+              <p className="dim">v{version} —— 左边单击打开，双击直接连。</p>
             </div>
           )}
         </div>

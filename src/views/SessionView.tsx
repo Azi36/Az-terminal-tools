@@ -7,7 +7,8 @@ import { SftpPanel } from "./SftpPanel";
 import { ConnectionPage } from "./ConnectionPage";
 import { TunnelPanel } from "./TunnelPanel";
 import { IconCheck, IconFiles, IconKey, IconLink, IconLock, IconSettings, IconTerminal, IconX } from "../components/icons";
-import { DEFAULT_ENCODING, ENCODINGS, type Connection } from "../types";
+import { takeSecret } from "../secrets";
+import { DEFAULT_ENCODING, ENCODINGS, type Connection, type Wake } from "../types";
 
 type Mode = "term" | "files" | "config" | "tunnel";
 
@@ -30,8 +31,12 @@ interface SessionViewProps {
   autoReconnect: boolean;
   /** 开标签时停在哪一页 */
   initialMode?: Mode;
-  /** 开标签要不要顺手连上（双击进来是要连的，单击看配置就不连） */
+  /** 开标签要不要顺手连上（双击进来是要连的，单击只是打开就不连） */
   autoConnect?: boolean;
+  /** 侧栏又点了一次这台机器：切到它要的那页，该连就连 */
+  wake?: Wake;
+  /** 这个标签此刻停在哪一页：上层记下来，下次开应用摆回原样 */
+  onMode?: (mode: Mode) => void;
   /** 会话建立 / 断开时告诉上层，指令库要往当前终端里塞命令 */
   onSession: (sessionId: string | null) => void;
   /** 文件面板里点了「编辑」→ 上层开一个编辑器标签 */
@@ -91,6 +96,8 @@ export function SessionView({
   autoReconnect,
   initialMode = "term",
   autoConnect = true,
+  wake,
+  onMode,
   jump,
   onSession,
   onEditFile,
@@ -99,10 +106,15 @@ export function SessionView({
   onConfigDirty,
 }: SessionViewProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const [password, setPassword] = useState("");
-  const [passphrase, setPassphrase] = useState("");
+  // 刚在配置页填过密码就接过来（只在内存里传，见 secrets.ts）：
+  // 用 useState 的惰性初始化取，第一次 render 就到位，下面的自动连能直接用上
+  const [seed] = useState(() => takeSecret(conn.id));
+  const tellMode = useRef(onMode);
+  tellMode.current = onMode;
+  const [password, setPassword] = useState(conn.authType === "key" ? "" : seed?.secret ?? "");
+  const [passphrase, setPassphrase] = useState(conn.authType === "key" ? seed?.secret ?? "" : "");
   const [saved, setSaved] = useState(false);
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(seed?.remember ?? true);
   const [mode, setMode] = useState<Mode>(initialMode);
   /** 这条会话此刻用的编码（可以连着改，不用重连） */
   const [encoding, setEncoding] = useState(conn.encoding || DEFAULT_ENCODING);
@@ -174,6 +186,15 @@ export function SessionView({
     if (conn.protocol === "ftp") return;
     if (isKey && !conn.keyPath) {
       setPhase({ kind: "error", err: { message: "这个连接没有配置私钥路径，去「配置」页补上" } });
+      return;
+    }
+    // 配了跳板机却找不到那条连接（多半是被删了）：宁可停下，也不能闷声直连 ——
+    // 本来就是因为直连不通（或者不该直连）才配的跳板
+    if (conn.jumpId && !jump) {
+      setPhase({
+        kind: "error",
+        err: { message: "这条连接配的跳板机不见了", detail: "那条连接可能已经删掉。去「配置」页重新指一台，或者改成直连。" },
+      });
       return;
     }
     const typed = isKey ? passphrase : password;
@@ -260,10 +281,13 @@ export function SessionView({
       .then((has) => {
         if (!mounted.current) return;
         setSaved(has);
-        if (autoConnect && (has || isKey)) connectNow.current(true);
+        if (!autoConnect) return;
+        // 刚填的那条要走「非静默」：静默连是拿钥匙串里的旧凭据，不会记新密码
+        if (seed?.secret) { void connectNow.current(false); return; }
+        if (has || isKey) void connectNow.current(true);
       })
       .catch(() => {});
-  }, [conn.id, conn.protocol, isKey, autoConnect]);
+  }, [conn.id, conn.protocol, isKey, autoConnect, seed]);
 
   // 服务器主动断开（exit / 超时 / 网络抖）→ 回到连接面板，能自动接的就自动接
   const openSessionId = open ? phase.sessionId : null;
@@ -332,6 +356,40 @@ export function SessionView({
     if (cameBack && phase.kind === "napped") connectNow.current(true);
   }, [active, phase.kind]);
 
+  // 侧栏第二次点同一台机器（双击连接 / 打开文件面板 / 看配置）就走这儿。
+  // 没有它的话，标签已经开着时那一下点击只是切过去，「连接」那件事没人做。
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const wokeAt = useRef(wake?.seq ?? 0);
+  useEffect(() => {
+    const seq = wake?.seq ?? 0;
+    if (seq === wokeAt.current) return;
+    wokeAt.current = seq;
+    const next = wake?.mode ?? "term";
+    setMode(next);
+    const live = phaseRef.current.kind;
+    if (next === "files" && live === "open") setFilesMounted(true);
+    if (!wake?.connect || live === "open" || live === "connecting") return;
+    if (conn.protocol === "ftp") return;
+    const typedNow = isKey ? passphrase : password;
+    // 手上没凭据就别去撞一次认证，停在密码框那儿等用户输。
+    // 钥匙串那一问可能还没回来（开标签和这次点击就隔了一次双击的功夫），所以再问一次。
+    if (!isKey && !savedRef.current && typedNow === "") {
+      void invoke<boolean>("creds_has", { connId: conn.id })
+        .then((has) => {
+          if (!mounted.current || !has) return;
+          setSaved(true);
+          if (phaseRef.current.kind !== "open" && phaseRef.current.kind !== "connecting") void connectNow.current(true);
+        })
+        .catch(() => {});
+      return;
+    }
+    void connectNow.current(typedNow === "");
+  }, [wake, conn.protocol, isKey, password, passphrase]);
+
+  // 停在哪一页要往上报一声，「记住上次的标签」才不是只记住服务器
+  useEffect(() => { tellMode.current?.(mode); }, [mode]);
+
   const disconnect = async () => {
     // 标一下：接下来那个 close 事件是我自己弄的，别触发自动重连
     byHand.current = true;
@@ -353,6 +411,12 @@ export function SessionView({
     setSaved(false);
   };
 
+  /** 配置页里填了密码：直接落进这张连接卡，不再另外弹一个框问一遍 */
+  const takeTyped = useCallback((secret: string, keep: boolean) => {
+    if (conn.authType === "key") setPassphrase(secret); else setPassword(secret);
+    setRemember(keep);
+  }, [conn.authType]);
+
   /** 文件页可以单独进：没连就顺手连上，连上直接落在文件面板 */
   const goFiles = () => {
     setMode("files");
@@ -361,6 +425,8 @@ export function SessionView({
   };
 
   const connecting = phase.kind === "connecting";
+  /** 这次手上现有的密码 / 密码短语（连接卡里填的，或者配置页刚递过来的） */
+  const typed = isKey ? passphrase : password;
   // 记过凭据 / 密钥认证时可以空手连
   const canConnect = isKey || saved || password !== "";
 
@@ -473,7 +539,7 @@ export function SessionView({
             type="button"
             disabled={connecting || !canConnect || conn.protocol === "ftp" || !!askAuth}
             onClick={() => { if (mode === "config") setMode("term"); void connect(); }}
-            title={canConnect ? "连上去" : "先填密码"}
+            title={canConnect ? "连上去" : "先在下面填一次密码"}
           >
             {connecting ? "连接中……" : "连接"}
           </button>
@@ -543,6 +609,12 @@ export function SessionView({
                   <p className="dim">FTP 还没接上，先用 SFTP。</p>
                 ) : (
                   <>
+                    {/* 卡片自己说清楚要连谁，光一个密码框看不出是哪台 */}
+                    <div className="connect-head">
+                      <h2>{conn.name || conn.host}</h2>
+                      <span>{conn.username}@{conn.host}:{conn.port}</span>
+                    </div>
+
                     {isKey && (
                       <div className="key-row">
                         <IconKey size={15} />
@@ -550,7 +622,8 @@ export function SessionView({
                       </div>
                     )}
 
-                    {saved ? (
+                    {/* 钥匙串里有、手上又没现填的，就不摆输入框了 */}
+                    {saved && !typed ? (
                       <div className="saved-row">
                         <IconCheck size={15} />
                         <span>已记住{isKey ? "密码短语" : "密码"}，点连接就走</span>
@@ -579,7 +652,7 @@ export function SessionView({
                             type="password"
                             value={password}
                             autoFocus={active}
-                            placeholder="输一次就够"
+                            placeholder="输一次，勾上记住就不用再输"
                             onChange={(e) => setPassword(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && connect()}
                           />
@@ -587,10 +660,10 @@ export function SessionView({
                       </label>
                     )}
 
-                    {!saved && (
+                    {(!saved || typed) && (
                       <label className="check-row" title="存进系统钥匙串（Windows 凭据管理器 / macOS 钥匙串）">
                         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-                        <span>记住，下次直接连</span>
+                        <span>连上之后记住{isKey ? "密码短语" : "密码"}，下次直接连</span>
                       </label>
                     )}
 
@@ -611,10 +684,13 @@ export function SessionView({
                     <button className="btn-primary" type="button" disabled={connecting || !canConnect} onClick={() => connect()}>
                       {connecting ? "连接中……" : mode === "files" ? "连上并进文件面板" : "连接"}
                     </button>
-                    <p className="form-note">
-                      <IconLock size={13} />
-                      勾了记住就交给系统钥匙串保管，我们自己的文件里没有明文。
-                    </p>
+                    {/* 没有那个勾的时候就别提「勾了记住」，说的是屏幕上不存在的东西 */}
+                    {(!saved || typed) && (
+                      <p className="form-note">
+                        <IconLock size={13} />
+                        勾了记住就交给系统钥匙串保管（Windows 凭据管理器 / macOS 钥匙串），我们自己的文件里没有明文。
+                      </p>
+                    )}
                   </>
                 )}
               </div>
@@ -652,6 +728,7 @@ export function SessionView({
             status={open ? "live" : "down"}
             embedded
             onSave={onSaveConn}
+            onSecret={takeTyped}
             onDelete={onDeleteConn}
             onDirtyChange={onConfigDirty}
           />

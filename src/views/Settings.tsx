@@ -49,6 +49,8 @@ interface SettingsProps {
   onUpdateNoticeChange: (on: boolean) => void;
   /** 后端提示的新版本；没有就是 null */
   fresh: Release | null;
+  /** 此刻连着的会话数：装完更新要重启，得先把这句说清楚 */
+  liveSessions: number;
   /** 导入完要让上层把连接、指令这些重新读一遍 */
   onDataChanged: () => void;
   onClose: () => void;
@@ -103,6 +105,7 @@ export function Settings({
   updateNotice,
   onUpdateNoticeChange,
   fresh,
+  liveSessions,
   onDataChanged,
   onClose,
   version,
@@ -159,7 +162,8 @@ export function Settings({
   // 分开是因为 api.github.com 国内经常拉不动 —— 拉不动的后果不是"提示晚了"，
   // 是用户永远不知道有新版。
   const [update, setUpdate] = useState<{
-    state: "idle" | "checking" | "downloading";
+    /** done = 装好了，就差重启；重启这一下留给用户自己点 */
+    state: "idle" | "checking" | "downloading" | "done";
     note?: string;
     tone?: "ok" | "bad";
   }>({ state: "idle" });
@@ -174,9 +178,9 @@ export function Settings({
       }
       setUpdate({ state: "downloading", note: `发现 v${found.version}，下载中……`, tone: "ok" });
       await found.downloadAndInstall();
-      setUpdate({ state: "idle", note: `v${found.version} 装好了，重启应用生效`, tone: "ok" });
-      // 装完直接重启，省得用户手动关了再开
-      await relaunch();
+      // 装好了**不自动重启**：重启等于把所有开着的会话掐掉、没保存的编辑器内容丢掉。
+      // 用户点的可能只是「检查一下」，不该顺手替他做这个决定。
+      setUpdate({ state: "done", note: `v${found.version} 装好了，重启之后生效`, tone: "ok" });
     } catch (e) {
       setUpdate({
         state: "idle",
@@ -489,13 +493,19 @@ export function Settings({
             <h3><IconLock size={14} />关于<em className="on">v{version}</em></h3>
             <div className="row-between">
               <div className="label">
-                <b>Azi-Terminal</b>
+                <b>AzTerm</b>
                 <small>SSH · SFTP · 指令库 · 备忘录，免费无账号不过期</small>
               </div>
               <div className="data-acts">
-                <button className="btn-ghost sm" type="button" disabled={update.state === "checking" || update.state === "downloading"} onClick={checkUpdate}>
-                  {update.state === "checking" ? "查着……" : update.state === "downloading" ? "下载中……" : "检查更新"}
-                </button>
+                {update.state === "done" ? (
+                  <button className="btn-primary sm" type="button" onClick={() => void relaunch()}>
+                    重启生效
+                  </button>
+                ) : (
+                  <button className="btn-ghost sm" type="button" disabled={update.state === "checking" || update.state === "downloading"} onClick={checkUpdate}>
+                    {update.state === "checking" ? "查着……" : update.state === "downloading" ? "下载中……" : "检查更新"}
+                  </button>
+                )}
                 <button className="btn-ghost sm" type="button" onClick={() => void openUrl("https://azi36.com")}>
                   去主站
                 </button>
@@ -520,7 +530,12 @@ export function Settings({
               </div>
             )}
 
-            {update.note && <p className={`data-note ${update.tone}`}>{update.note}</p>}
+            {update.note && (
+              <p className={`data-note ${update.tone}`}>
+                {update.note}
+                {update.state === "done" && liveSessions > 0 && ` · 现在有 ${liveSessions} 条会话连着，重启会全部断开`}
+              </p>
+            )}
 
             <div className="card-group">
               <h4>新版提示<em className={updateNotice ? "on" : "off"}>{updateNotice ? "开着" : "关着"}</em></h4>
@@ -539,7 +554,7 @@ export function Settings({
               </div>
             </div>
             <p className="page-meta">
-              Azi36 家族第 002 号产品 Az-term · 桌面版（Windows / macOS）<br />
+              Azi36 家族第 002 号产品 AzTerm · 桌面版（Windows / macOS）<br />
               开源于 github.com/Azi36/Az-terminal-tools · 官网 term.azi36.com
             </p>
           </section>

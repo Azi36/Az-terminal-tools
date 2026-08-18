@@ -179,6 +179,23 @@ export function saveOpenTabs(tabs: SavedTab[]) {
   } catch {}
 }
 
+/**
+ * 一条连接删了：跟着它走的东西一起清掉 —— 收藏目录、上次待的目录。
+ * 不清的话它们会一直躺在 localStorage 里，新建的连接还可能捡到同 id 的旧记录。
+ */
+export function forgetScope(scope: string) {
+  write(KEYS.bookmarks, read<Bookmark>(KEYS.bookmarks).filter((one) => one.scope !== scope));
+  try {
+    const raw = localStorage.getItem(DIRS_KEY);
+    if (!raw) return;
+    const map = JSON.parse(raw);
+    if (map && typeof map === "object" && scope in map) {
+      delete map[scope];
+      localStorage.setItem(DIRS_KEY, JSON.stringify(map));
+    }
+  } catch {}
+}
+
 export function newId(): string {
   try {
     return crypto.randomUUID();
