@@ -1,13 +1,74 @@
 name: 出安装包
 
-# 打个 v* 标签就出包；也能在 Actions 页面手动点
+# 打个 v* 标签就出包；也能在 Actions 页面手动点（那时候得自己填 tag）
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要出包的 tag（例如 v0.7.0）"
+        required: true
 
 jobs:
+  # 先把草稿建出来，把 id 交给下面两个 runner。
+  #
+  # 为什么不让它们各自「找不到就建」：那两个 job 是并行的，草稿又没有真正的 tag
+  # 引用、按 tag 根本查不到，于是两边都以为没有、各建一个草稿。v0.7.0 第一次出包
+  # 就是这样，Windows 和 macOS 的产物分在了两个草稿里。
+  # 更要命的是 latest.json——它是按「同一个 release 上已有的那份」合并平台的，
+  # 分成两份就等于每份只写了一个平台，另一个平台的自动更新直接是坏的。
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.make.outputs.result }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: 认哪个 tag
+        id: pick
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: 建草稿
+        id: make
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const tag = '${{ steps.pick.outputs.tag }}'
+            if (!/^v\d/.test(tag)) {
+              core.setFailed(`「${tag}」不像个版本 tag。手动触发时要在输入框里填 v0.7.0 这样的值，` +
+                             `否则会建出一个名字是分支名的 Release。`)
+              return
+            }
+            // 同一个 tag 重跑时别再建一个：已有的（草稿也算）直接复用
+            const { data: list } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            })
+            const had = list.find((one) => one.tag_name === tag)
+            if (had) {
+              core.info(`复用已有的 Release #${had.id}（draft=${had.draft}）`)
+              return String(had.id)
+            }
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              // 展示用的名字跟官网统一成 AzTerm；
+              // 安装包里的 productName 没动，那个改了会牵动安装包标识和更新器匹配
+              name: `AzTerm ${tag}`,
+              body: "Windows 装 .msi，macOS 装 .dmg。",
+              // 草稿：附件齐不齐要人看过才发，Publish 那一下才会惊动用户
+              draft: true,
+              prerelease: false,
+            })
+            return String(data.id)
+
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -21,7 +82,10 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
+      # 手动触发时 ref 是分支，得显式检出那个 tag，不然打出来的是 main 的代码
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
 
       - name: 装 Node
         uses: actions/setup-node@v4
@@ -42,7 +106,7 @@ jobs:
       - name: 装前端依赖
         run: npm ci
 
-      - name: 打包 + 发 Release 草稿
+      - name: 打包 + 传到那个草稿上
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,13 +131,9 @@ jobs:
           #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
           #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
         with:
-          tagName: ${{ github.ref_name }}
-          # 展示用的名字跟官网统一成 AzTerm；
-          # 安装包里的 productName 没动，那个改了会牵动安装包标识和更新器匹配
-          releaseName: "AzTerm ${{ github.ref_name }}"
-          releaseBody: "Windows 装 .msi，macOS 装 .dmg。"
-          releaseDraft: true
-          prerelease: false
+          # 上一步建好的那个草稿：两个平台都往它上面传，
+          # latest.json 才会被合成一份带两个平台的清单
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           # latest.json 是自动更新用的清单，让 tauri-action 一起传上去
           includeUpdaterJson: true
           args: ${{ matrix.args }}
