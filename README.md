@@ -44,6 +44,9 @@ npm run tauri build    # 出安装包
 
 ## 发版
 
+改了什么记在 [CHANGELOG.md](CHANGELOG.md)；发版时把对应小节抄进 Release 说明，
+应用里「设置 → 关于」显示的就是那段。
+
 打个 `v*` 标签，CI 出 Windows / macOS 安装包并发 Release 草稿。
 
 自动更新要签名，仓库里得配两个 secret，**两个都必须有值**：
