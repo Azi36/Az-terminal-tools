@@ -1,6 +1,6 @@
 [package]
 name = "az-term"
-version = "0.6.0"
+version = "0.7.0"
 description = "Az-term：SSH / SFTP / 终端，免费无账号不过期"
 authors = ["Azi36"]
 edition = "2021"
