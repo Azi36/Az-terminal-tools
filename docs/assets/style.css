@@ -12,15 +12,16 @@
   --text-3: #a1a1aa;        /* 弱化文字 */
   --border: #e4e4e7;        /* 边框 */
   --border-light: #f0f0f2;  /* 更浅的边框 */
-  --brand: #1e40d8;         /* 品牌蓝 */
-  --brand-hover: #1a35b0;
-  --brand-light: #eef1fc;   /* 品牌浅底 */
-  --grad-brand: linear-gradient(135deg, #1e40d8, #6d5ae0);   /* 渐变填充：上面要压白字，得够深 */
-  --grad-text: linear-gradient(135deg, #1e40d8, #6d5ae0);    /* 渐变文字：自己就是字，深浅另算 */
-  --grad-warm: linear-gradient(135deg, #342b62, #7257d8 56%, #e27655);
-  --blob-a: #c7d4ff;        /* 极光背景三团光的颜色 */
-  --blob-b: #e8ddff;
-  --blob-c: #ffe3d3;
+  --brand: #016c73;         /* 品牌青 */
+  --brand-hover: #0b5459;
+  --brand-light: #e1f4f5;   /* 品牌浅底 */
+  --grad-brand: linear-gradient(135deg, #016c73, #006b58);   /* 渐变填充：上面要压白字，得够深 */
+  --grad-text: linear-gradient(135deg, #016c73, #006b58);    /* 渐变文字：自己就是字，深浅另算 */
+  --grad-warm: linear-gradient(135deg, #003e42, #017974 56%, #e2914f);
+  --accent: var(--brand);   /* 频道点缀色；没有频道 class 的页面就等于品牌色 */
+  --blob-a: #bee9ed;        /* 极光背景三团光的颜色 */
+  --blob-b: #cceafa;
+  --blob-c: #dbe9fe;
   --radius: 8px;
   --radius-lg: 12px;
   --shadow-card: 0 1px 2px rgba(0,0,0,.04), 0 4px 14px rgba(0,0,0,.05);
@@ -40,17 +41,24 @@
    #1e40d8 压在近黑底上对比度只有 2.35（正文要 4.5），大标题和主按钮
    一律发闷发脏；卡片底与页面底对比 1.07，等于没有层次。
    所以：底色压深并偏一点冷、卡片提起来、品牌色和渐变文字提亮到达标，
-   极光那三团光也从浅粉浅蓝换成冷蓝深紫，免得压暗后泛浑浊。 */
+   极光那三团光也从浅粉浅蓝换成冷蓝深紫，免得压暗后泛浑浊。
+
+   2026-08-22 换成品牌青之后又调了一轮，两个原因：
+   一是老的 --dark-brand #6b8bff 压在 #101116 上，WCAG 6.07:1 看着达标，
+   APCA 却只有 Lc -43 —— 连"次要文字"那一档都不够，这是老公式在深色下
+   系统性高估的典型。现在的 #a1dadf 是 Lc -78，过正文级。
+   二是青在高对比度下装不下太多色度，深色主色不能照搬 400 档，
+   得取到 300 档才够亮。 */
 :root[data-theme="dark"],
 :root:not([data-theme="light"]) {
   --dark-bg: #101116; --dark-bg-soft: #1e212a; --dark-bg-hover: #272b36;
   --dark-text: #e9eaf0; --dark-text-2: #a9adbb; --dark-text-3: #868b9a;
   --dark-border: #313543; --dark-border-light: #262a34;
-  --dark-brand: #6b8bff; --dark-brand-hover: #8aa4ff; --dark-brand-light: #182043;
+  --dark-brand: #a1dadf; --dark-brand-hover: #c5e9ec; --dark-brand-light: #063235;
   /* 填充用的渐变要压得住白字，文字用的渐变要在深底上读得出，两者不能共用 */
-  --dark-grad-brand: linear-gradient(135deg, #3552e8, #7a5fe0);
-  --dark-grad-text: linear-gradient(135deg, #7d9bff, #b49bff);
-  --dark-blob-a: #1d2b63; --dark-blob-b: #2a2059; --dark-blob-c: #16304a;
+  --dark-grad-brand: linear-gradient(135deg, #00787f, #007b66);
+  --dark-grad-text: linear-gradient(135deg, #a1dadf, #9ce2ce);
+  --dark-blob-a: #003b3f; --dark-blob-b: #0f3343; --dark-blob-c: #27364d;
   --dark-header-bg: rgba(16,17,22,.82); --dark-nav-bg: rgba(35,38,47,.7);
 }
 
@@ -87,11 +95,7 @@
    没有频道 class 的页面（首页 / 404 / 产品页）走 var() 的兜底，即基础深色板。
    ⚠ 这一对同样必须逐行一致，tools/check.mjs 会比对。 */
 :root[data-theme="dark"] body {
-  --brand: var(--dk-brand, var(--dark-brand));
-  --brand-hover: var(--dk-brand-hover, var(--dark-brand-hover));
-  --brand-light: var(--dk-brand-light, var(--dark-brand-light));
-  --grad-brand: var(--dk-grad-brand, var(--dark-grad-brand));
-  --grad-text: var(--dk-grad-text, var(--dark-grad-text));
+  --accent: var(--dk-accent, var(--dark-brand));
   --blob-a: var(--dk-blob-a, var(--dark-blob-a));
   --blob-b: var(--dk-blob-b, var(--dark-blob-b));
   --blob-c: var(--dk-blob-c, var(--dark-blob-c));
@@ -99,11 +103,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) body {
-    --brand: var(--dk-brand, var(--dark-brand));
-    --brand-hover: var(--dk-brand-hover, var(--dark-brand-hover));
-    --brand-light: var(--dk-brand-light, var(--dark-brand-light));
-    --grad-brand: var(--dk-grad-brand, var(--dark-grad-brand));
-    --grad-text: var(--dk-grad-text, var(--dark-grad-text));
+    --accent: var(--dk-accent, var(--dark-brand));
     --blob-a: var(--dk-blob-a, var(--dark-blob-a));
     --blob-b: var(--dk-blob-b, var(--dark-blob-b));
     --blob-c: var(--dk-blob-c, var(--dark-blob-c));
@@ -121,89 +121,66 @@ html { transition: background .3s var(--ease); }
 }
 
 /* ============================================
-   频道主题：给 <body> 加类即可整页换装
+   频道点缀：给 <body> 加类，只换氛围，不换品牌色
    ============================================ */
 
-/* 每个频道都写两套：--xx 是浅色下直接用的，--dk-xx 只在深色下由下面那对
-   映射规则接管。这样加频道只改一处，不用再去深色区补规则。 */
+/* 2026-08-22 改：频道原本是整页换装，连按钮、链接、渐变一起换。
+   现在降级为点缀 —— 品牌青全站统一，频道只保留两样：极光背景的色调，
+   和 --accent（导航当前项、栏目眉标这类小面积着色）。
+   五个频道还认得出各自的脾气，但站还是一个站。
+
+   点缀色的色度统一收在 0.115：比品牌青(0.082)活一点（面积小，得读得出），
+   但远低于原来的 0.165~0.209，不会喧宾夺主。浅色那档压白底、
+   深色那档压 #101116，都过了正文级（4.5:1 且 |Lc|≥75）。
+
+   每个频道两套：--xx 浅色直接用，--dk-xx 只在深色下由上面那对映射接管。
+   加频道只改这一处，不用再去深色区补规则。 */
 
 /* 🧡 分享频道：暖橙 */
 body.ch-orange {
-  --brand: #d96716;
-  --brand-hover: #b8540f;
-  --brand-light: #fff1e6;
-  --grad-brand: linear-gradient(135deg, #e2742d, #d43f3f);
-  --grad-text: linear-gradient(135deg, #e2742d, #d43f3f);
-  --blob-a: #ffd9bd;
-  --blob-b: #ffe8d6;
-  --blob-c: #ffd0d0;
-  --dk-brand: #f0913f;
-  --dk-brand-hover: #ffa757;
-  --dk-brand-light: #3a2411;
-  --dk-grad-brand: linear-gradient(135deg, #b0551a, #a3332e);
-  --dk-grad-text: linear-gradient(135deg, #ffa95c, #ff8a7a);
-  --dk-blob-a: #4a2a12;
-  --dk-blob-b: #3a2618;
-  --dk-blob-c: #3d1f22;
+  --accent: #a5592d;
+  --blob-a: #fad8c6;
+  --blob-b: #f3e2c9;
+  --blob-c: #ebe9d1;
+  --dk-accent: #ffbf9d;
+  --dk-blob-a: #492a19;
+  --dk-blob-b: #3d2b0e;
+  --dk-blob-c: #39371a;
 }
 
 /* 💚 推荐频道：青绿 */
 body.ch-green {
-  --brand: #00953a;
-  --brand-hover: #007a30;
-  --brand-light: #e6f9ec;
-  --grad-brand: linear-gradient(135deg, #00a32a, #0aa5a5);
-  --grad-text: linear-gradient(135deg, #00a32a, #0aa5a5);
-  --blob-a: #c2f0cc;
-  --blob-b: #dff5e2;
-  --blob-c: #d6f0ff;
-  --dk-brand: #3ecf7a;
-  --dk-brand-hover: #62dd93;
-  --dk-brand-light: #103021;
-  --dk-grad-brand: linear-gradient(135deg, #0b7f36, #0a7d7d);
-  --dk-grad-text: linear-gradient(135deg, #4fdc8a, #4fd8d8);
-  --dk-blob-a: #10402a;
-  --dk-blob-b: #123a2c;
-  --dk-blob-c: #10333f;
+  --accent: #337c42;
+  --blob-a: #cde8cf;
+  --blob-b: #cbede3;
+  --blob-c: #d0eff2;
+  --dk-accent: #94de9e;
+  --dk-blob-a: #1e3a22;
+  --dk-blob-b: #0b372e;
+  --dk-blob-c: #143c40;
 }
 
 /* 💜 游戏频道：紫红 */
 body.ch-pink {
-  --brand: #d63384;
-  --brand-hover: #b52a6f;
-  --brand-light: #ffe9f4;
-  --grad-brand: linear-gradient(135deg, #e0479b, #8a4fd0);
-  --grad-text: linear-gradient(135deg, #e0479b, #8a4fd0);
-  --blob-a: #ffd3ea;
-  --blob-b: #ffe3f1;
-  --blob-c: #e6d9ff;
-  --dk-brand: #f472b6;
-  --dk-brand-hover: #f992c7;
-  --dk-brand-light: #3a1730;
-  --dk-grad-brand: linear-gradient(135deg, #b8317a, #6f38b0);
-  --dk-grad-text: linear-gradient(135deg, #ff8ac4, #b98cf5);
-  --dk-blob-a: #3f1b33;
-  --dk-blob-b: #351a34;
-  --dk-blob-c: #2a1f4a;
+  --accent: #a55274;
+  --blob-a: #f9d4e1;
+  --blob-b: #fddbd8;
+  --blob-c: #fae2d5;
+  --dk-accent: #ffb8d2;
+  --dk-blob-a: #492634;
+  --dk-blob-b: #452423;
+  --dk-blob-c: #482f20;
 }
 
 body.ch-purple {
-  --brand: #7257d8;
-  --brand-hover: #5d43c4;
-  --brand-light: #f1ecff;
-  --grad-brand: linear-gradient(135deg, #7257d8, #c44fd0);
-  --grad-text: linear-gradient(135deg, #7257d8, #c44fd0);
-  --blob-a: #ddd3ff;
-  --blob-b: #efe0ff;
-  --blob-c: #ffd6ee;
-  --dk-brand: #a78bfa;
-  --dk-brand-hover: #bda6ff;
-  --dk-brand-light: #241a40;
-  --dk-grad-brand: linear-gradient(135deg, #5d3fc0, #9c39ad);
-  --dk-grad-text: linear-gradient(135deg, #b49bff, #e08ae0);
-  --dk-blob-a: #241a48;
-  --dk-blob-b: #2a1a42;
-  --dk-blob-c: #3a1a38;
+  --accent: #6e64af;
+  --blob-a: #dddcfd;
+  --blob-b: #efddf6;
+  --blob-c: #f8e0ed;
+  --dk-accent: #cbc6ff;
+  --dk-blob-a: #322e4d;
+  --dk-blob-b: #392740;
+  --dk-blob-c: #462c3b;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -239,7 +216,7 @@ html, body {
    !important 用于压过零散的 cursor: pointer 声明，避免闪回系统小手 */
 a, button, label, summary, select, .terminal, [role="button"], .hand .pcard,
 input[type="range"], input[type="checkbox"], input[type="radio"], .mu-progress {
-  cursor: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'><path d='M6 3v14.5l3.5-3 2.2 5 2.6-1.1-2.2-5 4.6-.4z' fill='%231e40d8' stroke='white' stroke-width='1.6' stroke-linejoin='round'/><path d='M19.5 3.5l1 2.1 2.1 1-2.1 1-1 2.1-1-2.1-2.1-1 2.1-1z' fill='%23ffb02e'/></svg>") 6 3, pointer !important;
+  cursor: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'><path d='M6 3v14.5l3.5-3 2.2 5 2.6-1.1-2.2-5 4.6-.4z' fill='%23016c73' stroke='white' stroke-width='1.6' stroke-linejoin='round'/><path d='M19.5 3.5l1 2.1 2.1 1-2.1 1-1 2.1-1-2.1-2.1-1 2.1-1z' fill='%23ffb02e'/></svg>") 6 3, pointer !important;
 }
 
 /* 只有真正输入文字的地方才配 I 形 */
@@ -378,7 +355,7 @@ main.container { padding-top: 44px; padding-bottom: 96px; }
 .site-nav a:hover { color: var(--text); }
 
 .site-nav a.active {
-  color: var(--brand);
+  color: var(--accent);
   background: var(--bg);
   box-shadow: var(--shadow-card);
   font-weight: 600;
@@ -574,7 +551,7 @@ h2 { font-size: 22px; letter-spacing: -.01em; margin: 48px 0 18px; }
 
 /* 小型栏目标签：蓝色大写字距标签 */
 .kicker {
-  color: var(--brand);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: .08em;
