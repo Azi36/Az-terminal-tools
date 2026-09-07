@@ -11,6 +11,7 @@ import type { SessionMode } from "./types";
 export type AppAction =
   | "palette"
   | "newConn"
+  | "newLocal"
   | "closeTab"
   | "nextTab"
   | "prevTab"
@@ -23,6 +24,7 @@ export type AppAction =
 export const SHORTCUTS = {
   palette: "Ctrl+Shift+P",
   newConn: "Ctrl+Shift+T",
+  newLocal: "Ctrl+Shift+L",
   closeTab: "Ctrl+Shift+W",
   nextTab: "Ctrl+Tab",
   prevTab: "Ctrl+Shift+Tab",
@@ -85,6 +87,7 @@ export function matchShortcut(e: KeyLike): Matched | null {
   const key = e.key.toLowerCase();
   if (key === "p") return { action: "palette" };
   if (key === "t") return { action: "newConn" };
+  if (key === "l") return { action: "newLocal" };
   if (key === "w") return { action: "closeTab" };
   if (key === "b") return { action: "sidebar" };
   if (e.code === "Comma" || e.key === "," || e.key === "<") return { action: "settings" };
@@ -102,6 +105,7 @@ export const SHORTCUT_GROUPS: { title: string; items: { keys: string; what: stri
       { keys: SHORTCUTS.prevTab, what: "上一个标签" },
       { keys: SHORTCUTS.nthTab, what: "跳到第几个标签，9 是最后一个" },
       { keys: SHORTCUTS.newConn, what: "新建连接" },
+      { keys: SHORTCUTS.newLocal, what: "新建本地终端" },
       { keys: SHORTCUTS.closeTab, what: "关掉当前标签" },
     ],
   },

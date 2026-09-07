@@ -6,7 +6,7 @@ import { SHORTCUTS } from "../shortcuts";
 export interface TabItem {
   id: string;
   label: string;
-  kind: "session" | "note" | "file" | "log" | "conn" | "settings";
+  kind: "session" | "note" | "file" | "log" | "conn" | "settings" | "local";
   /** 会话标签没连上时用连接的标签色 */
   color?: string;
   /** 连着=绿 断了=红 */
@@ -82,6 +82,8 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitI
             </>
           ) : tab.kind === "file" ? (
             <IconFileEdit size={13} />
+          ) : tab.kind === "local" ? (
+            <IconTerminal size={13} />
           ) : tab.kind === "log" ? (
             <IconFileText size={13} />
           ) : tab.kind === "conn" ? (

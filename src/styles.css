@@ -1918,3 +1918,76 @@ body.dragging-split .split-grip { background: var(--brand); }
 .side-pop-head b { flex: 1; font-size: 13px; }
 .side-pop-head .new-conn { width: auto; min-height: 30px; padding: 0 10px; font-size: 12px; }
 .side-pop-body { flex: 1; overflow-y: auto; padding: 14px; }
+
+/* ---------- 本地终端 ---------- */
+.kind-head.act { color: var(--text-2); }
+.kind-head.act:hover { color: var(--brand); }
+/* min-width: 0 必须有：xterm 画布有固定像素宽，没有它整页会被撑到比标签区还宽，右边的东西全挤出窗口 */
+.local-page { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.local-bar { gap: 8px; }
+.local-cwd {
+  min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 3px 8px; border: 0; border-radius: var(--radius); background: transparent;
+  color: var(--text-3); font: 12px ui-monospace, Consolas, monospace; cursor: pointer; text-align: left;
+}
+.local-cwd:hover { color: var(--text); background: var(--bg-hover); }
+.local-cwd-input {
+  flex: 1; min-width: 0; padding: 3px 8px; border: 1px solid var(--brand); border-radius: var(--radius);
+  background: var(--bg); color: var(--text); font: 12px ui-monospace, Consolas, monospace;
+}
+.local-quick { display: flex; gap: 4px; }
+.local-bar .btn-ghost.on { color: var(--brand); background: var(--brand-soft); }
+.local-body { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.local-term { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+.local-term > .term-wrap, .local-term > div { flex: 1; min-height: 0; }
+.local-hint { padding: 16px; }
+.local-exit {
+  margin: auto; display: grid; gap: 10px; justify-items: center; text-align: center; padding: 24px;
+  color: var(--text-2);
+}
+.local-exit small { color: var(--text-3); max-width: 420px; line-height: 1.6; }
+
+.git-panel {
+  flex: none; width: 300px; min-height: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--border); background: var(--bg-soft); overflow-y: auto;
+}
+.git-head {
+  display: flex; align-items: center; gap: 6px; padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-soft); z-index: 1;
+}
+.git-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.git-sync { display: inline-flex; gap: 4px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.git-sync em { font-style: normal; padding: 1px 6px; border-radius: 999px; background: var(--bg-hover); color: var(--text-2); }
+.git-sync em.up { color: var(--ok); }
+.git-sync em.down { color: var(--warn); }
+.git-sync em.ok { color: var(--text-3); }
+.git-sync em.dim { color: var(--text-3); }
+.git-acts { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px 4px; }
+.git-switch { display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 12px; color: var(--text-3); }
+.git-switch select { flex: 1; min-width: 0; }
+.git-sec { padding: 8px 14px; }
+.git-sec h4 { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 12px; color: var(--text-3); font-weight: 600; }
+.git-sec h4 em { font-style: normal; color: var(--text-2); }
+.git-sec h4 small { margin-left: auto; font-weight: 400; }
+.git-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.git-list li { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.git-list.commits li { flex-wrap: wrap; row-gap: 0; padding: 3px 0; }
+.git-list.commits small { color: var(--text-3); font-size: 11px; margin-left: auto; }
+.git-tag {
+  flex: none; font-style: normal; font-size: 10.5px; padding: 1px 5px; border-radius: 4px;
+  background: var(--bg-hover); color: var(--text-2);
+}
+.git-tag.new { color: var(--ok); }
+.git-tag.del { color: var(--danger); }
+.git-tag.conflict { color: var(--warn); }
+.git-tag.staged { color: var(--brand); }
+.git-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  padding: 3px 4px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer;
+  font: 12px ui-monospace, Consolas, monospace;
+}
+.git-path:hover { background: var(--bg-hover); }
+.git-path code { color: var(--text-3); font-family: inherit; }
+.git-foot { padding: 8px 14px 14px; }
+.git-none { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 28px 16px; color: var(--text-2); }
+.git-none small { color: var(--text-3); line-height: 1.6; }

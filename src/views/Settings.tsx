@@ -56,6 +56,9 @@ interface SettingsProps {
   onUpdateNoticeChange: (on: boolean) => void;
   hotkey: string;
   onHotkeyChange: (accelerator: string) => void;
+  /** 本地终端用哪个 shell；空 = 自动 */
+  localShell: string;
+  onLocalShellChange: (shell: string) => void;
   syncUrl: string;
   syncUser: string;
   syncedAt: number;
@@ -120,6 +123,8 @@ export function Settings({
   updateNotice,
   onUpdateNoticeChange,
   hotkey,
+  localShell,
+  onLocalShellChange,
   onHotkeyChange,
   hotkeyErr,
   syncUrl,
@@ -133,6 +138,9 @@ export function Settings({
   version,
 }: SettingsProps) {
   // 导出 / 导入 / 扫 ssh config 的即时反馈，就在按钮旁边说一句
+  /** 「自动」实际会挑到哪个 shell，占位符里给用户看一眼 */
+  const [defaultShell, setDefaultShell] = useState("");
+  useEffect(() => { invoke<string>("pty_default_shell").then(setDefaultShell).catch(() => {}); }, []);
   const [note, setNote] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [found, setFound] = useState<{ hosts: ConfigHost[]; already: number } | null>(null);
@@ -790,6 +798,23 @@ export function Settings({
                 {update.state === "done" && liveSessions > 0 && ` · 现在有 ${liveSessions} 条会话连着，重启会全部断开`}
               </p>
             )}
+
+            <div className="card-group">
+              <h4>本地终端<em className={localShell ? "on" : "off"}>{localShell ? "指定了 shell" : "自动"}</em></h4>
+              <label className="field">
+                <span>用哪个 shell</span>
+                <input
+                  value={localShell}
+                  spellCheck={false}
+                  placeholder={`留空自动挑：${defaultShell || "pwsh → PowerShell → $SHELL"}`}
+                  onChange={(e) => onLocalShellChange(e.target.value)}
+                />
+                <em className="field-hint">
+                  填可执行文件的路径或命令名（pwsh、bash、cmd.exe……）。已经开着的终端要重启才会换。
+                  PowerShell 和 bash 会把当前目录报给 git 面板，zsh 暂时不会 —— 面板上可以手填目录。
+                </em>
+              </label>
+            </div>
 
             <div className="card-group">
               <h4>全局热键<em className={hotkey ? "on" : "off"}>{hotkey ? "开着" : "关着"}</em></h4>

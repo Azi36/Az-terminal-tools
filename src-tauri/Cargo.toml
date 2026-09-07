@@ -49,6 +49,7 @@ tauri-plugin-dialog = "2"
 
 # 装完更新之后自己重启
 tauri-plugin-process = "2"
+portable-pty = "0.8"
 
 # 后续：suppaftp（FTP）
 

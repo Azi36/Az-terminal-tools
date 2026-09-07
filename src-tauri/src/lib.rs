@@ -8,9 +8,11 @@
 
 mod creds;
 mod encoding;
+mod git;
 mod hosts;
 mod importers;
 mod localfs;
+mod pty;
 mod logs;
 mod remote;
 mod sftp;
@@ -53,11 +55,14 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = window.app_handle().state::<ssh::SshState>().inner().clone();
                 tauri::async_runtime::block_on(state.close_all());
+                // 本地终端的 shell 进程也一起收掉，别留孤儿
+                window.app_handle().state::<pty::PtyState>().close_all();
             }
         })
         .manage(ssh::SshState::default())
         .manage(sftp::SftpState::default())
         .manage(tunnel::TunnelState::default())
+        .manage(pty::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             engine_ping,
             ssh::ssh_connect,
@@ -124,6 +129,12 @@ pub fn run() {
             tunnel::tunnel_open,
             tunnel::tunnel_close,
             tunnel::tunnel_list,
+            pty::pty_open,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_close,
+            pty::pty_default_shell,
+            git::git_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Az-term");

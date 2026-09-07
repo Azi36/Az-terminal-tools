@@ -4,7 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Logo } from "./components/Logo";
 import {
-  IconChevronDown, IconChevronRight, IconCommand, IconDatabase, IconNote, IconPlus, IconServer, IconSettings, IconArrowLeft, IconX,
+  IconChevronDown, IconChevronRight, IconCommand, IconDatabase, IconNote, IconPlus, IconServer, IconSettings, IconArrowLeft, IconX, IconTerminal,
 } from "./components/icons";
 import { ConnectionList, type ConnStatus } from "./components/ConnectionList";
 import { SnippetPanel } from "./components/SnippetPanel";
@@ -40,6 +40,7 @@ import {
 } from "./store";
 import { applyHotkey } from "./hotkey";
 import { matchShortcut, PAGE_SHORTCUTS, SHORTCUTS } from "./shortcuts";
+import { LocalView } from "./views/LocalView";
 import type { MenuEntry } from "./components/ContextMenu";
 import { dropSecret } from "./secrets";
 import { checkRelease, type Release } from "./update";
@@ -102,6 +103,10 @@ function App() {
    * 不这样的话，先单击开了标签、再双击就只是切过去，连接那一下没人执行。
    */
   const [wakes, setWakes] = useState<Record<string, Wake>>({});
+  /** 本地终端标签此刻待在哪个目录（恢复标签时从那儿起） */
+  const [localCwd, setLocalCwd] = useState<Record<string, string>>({});
+  /** 本地终端标签里活着的 pty id；shell 退了就是 null */
+  const [localPtys, setLocalPtys] = useState<Record<string, string | null>>({});
 
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
   // 初值直接从落盘的那份读（没有就是 cleanSettings 给的默认值），别在这儿再抄一份默认值
@@ -151,6 +156,8 @@ function App() {
         back.push({ id: newId(), kind: "note", noteId: one.noteId });
       } else if (one.kind === "settings") {
         back.push({ id: newId(), kind: "settings" });
+      } else if (one.kind === "local") {
+        back.push({ id: newId(), kind: "local", cwd: one.cwd });
       }
     }
     if (back.length > 0) {
@@ -190,10 +197,11 @@ function App() {
         if (tab.kind === "session") return [{ kind: "session", connId: tab.connId, mode: tabModes[tab.id] }];
         if (tab.kind === "note") return [{ kind: "note", noteId: tab.noteId }];
         if (tab.kind === "settings") return [{ kind: "settings" }];
+        if (tab.kind === "local") return [{ kind: "local", cwd: localCwd[tab.id] ?? tab.cwd }];
         return [];
       }),
     );
-  }, [tabs, tabModes]);
+  }, [tabs, tabModes, localCwd]);
 
   // 关窗口前拦一句：编辑器里没保存的内容、正跑着的会话，关掉就没了。
   // 拦下来之后必须自己 destroy()，否则窗口关不掉 —— 权限在 capabilities/default.json。
@@ -275,6 +283,10 @@ function App() {
         case "settings":
           e.preventDefault();
           openSettings();
+          return;
+        case "newLocal":
+          e.preventDefault();
+          openLocal();
           return;
         case "sidebar":
           e.preventDefault();
@@ -592,6 +604,16 @@ function App() {
     which === "conns" ? (
       <div className="drawer">
         <button
+          className="kind-head act"
+          type="button"
+          onClick={() => openLocal()}
+          title={`在本机开一个终端 · ${SHORTCUTS.newLocal}`}
+        >
+          <IconTerminal size={13} /> 本机终端
+          <span className="kind-count">{tabs.filter((tab) => tab.kind === "local").length || "开"}</span>
+        </button>
+
+        <button
           className="kind-head"
           type="button"
           onClick={() => changeSettings({ foldServers: !settings.foldServers })}
@@ -637,7 +659,7 @@ function App() {
     ) : which === "snippets" ? (
       <SnippetPanel
         snippets={snippets}
-        canSend={!!activeSession}
+        canSend={!!activeSession || !!activeLocal}
         onSave={(snippet) => setSnippets(saveSnippet(snippet))}
         onImport={importSnippets}
         onDelete={handleDeleteSnippet}
@@ -656,6 +678,7 @@ function App() {
   const appMenuFor = (tabId: string): MenuEntry[] => [
     { label: "命令面板", hint: SHORTCUTS.palette, onClick: () => setPalette(true) },
     { label: "新建连接", hint: SHORTCUTS.newConn, onClick: openNewConn },
+    { label: "新建本地终端", hint: SHORTCUTS.newLocal, onClick: () => openLocal() },
     { label: "关掉这个标签", hint: SHORTCUTS.closeTab, onClick: () => closeTab(tabId) },
     { label: "设置", hint: SHORTCUTS.settings, onClick: openSettings },
   ];
@@ -701,6 +724,9 @@ function App() {
   };
 
   /** 新建连接：单开一个标签，存下来就变成这台服务器的标签 */
+  /** 本机开一个终端标签；可以开很多个 */
+  const openLocal = (cwd?: string) => openTab({ id: newId(), kind: "local", cwd });
+
   const openNewConn = () => {
     const existing = tabs.find((tab) => tab.kind === "conn");
     if (existing) { focusTab(existing.id); return; }
@@ -778,10 +804,24 @@ function App() {
     return null;
   }, [activeTab, sessions, tabs]);
 
+  /** 当前标签是本地终端且 shell 活着的话，它的 pty id */
+  const activeLocal = useMemo(() => {
+    if (!activeTab) return null;
+    const tab = tabs.find((one) => one.id === activeTab);
+    return tab?.kind === "local" ? localPtys[activeTab] ?? null : null;
+  }, [activeTab, tabs, localPtys]);
+
+  /** 指令库 / 命令面板往当前终端里塞命令：SSH 会话和本地终端都认 */
   const sendCommand = (command: string, run: boolean) => {
-    if (!activeSession) return;
-    invoke("ssh_write", { sessionId: activeSession, data: run ? `${command}\n` : command }).catch(() => {});
-    window.dispatchEvent(new CustomEvent("az-term:focus", { detail: activeSession }));
+    if (activeSession) {
+      invoke("ssh_write", { sessionId: activeSession, data: run ? `${command}\n` : command }).catch(() => {});
+      window.dispatchEvent(new CustomEvent("az-term:focus", { detail: activeSession }));
+      return;
+    }
+    if (activeLocal) {
+      invoke("pty_write", { sessionId: activeLocal, data: run ? `${command}\r` : command }).catch(() => {});
+      window.dispatchEvent(new CustomEvent("az-term:focus", { detail: activeLocal }));
+    }
   };
 
   const importSnippets = (items: Snippet[]) => {
@@ -847,6 +887,7 @@ function App() {
     const total = new Map<string, number>();
     for (const tab of tabs) {
       if (tab.kind === "session") total.set(tab.connId, (total.get(tab.connId) ?? 0) + 1);
+      if (tab.kind === "local") total.set("local", (total.get("local") ?? 0) + 1);
     }
 
     return tabs.map((tab) => {
@@ -863,6 +904,11 @@ function App() {
             status: sessions[tab.id] ? ("live" as const) : ("down" as const),
             dirty: !!dirtyTabs[tab.id],
           };
+        }
+        if (tab.kind === "local") {
+          const nth = (seen.get("local") ?? 0) + 1;
+          seen.set("local", nth);
+          return { id: tab.id, kind: "local" as const, label: (total.get("local") ?? 1) > 1 ? `本地终端 #${nth}` : "本地终端" };
         }
         if (tab.kind === "conn") return { id: tab.id, kind: "conn" as const, label: "新建连接", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "settings") return { id: tab.id, kind: "settings" as const, label: "设置" };
@@ -924,8 +970,8 @@ function App() {
       });
     }
 
-    // 片段插到当前终端里 —— 没有活着的会话就别列，点了也没地方去
-    if (activeSession) {
+    // 片段插到当前终端里 —— 没有活着的会话（SSH 或本地）就别列，点了也没地方去
+    if (activeSession || activeLocal) {
       for (const snip of snippets) {
         list.push({
           id: `snip:${snip.id}`,
@@ -950,6 +996,7 @@ function App() {
 
     list.push(
       { id: "act:new", group: "动作", label: "新建连接", hint: SHORTCUTS.newConn, run: openNewConn },
+      { id: "act:local", group: "动作", label: "新建本地终端", hint: SHORTCUTS.newLocal, run: () => openLocal() },
       { id: "act:note", group: "动作", label: "新建备忘", run: newNote },
       { id: "act:settings", group: "动作", label: "设置", hint: SHORTCUTS.settings, run: openSettings },
       { id: "act:side", group: "动作", label: settings.sideCollapsed ? "展开侧栏" : "收起侧栏", hint: SHORTCUTS.sidebar, run: toggleSide },
@@ -965,7 +1012,7 @@ function App() {
       list.push({ id: "act:close", group: "动作", label: "关掉当前标签", hint: SHORTCUTS.closeTab, run: () => closeTab(activeTab) });
     }
     return list;
-  }, [tabItems, tabs, activeTab, connections, snippets, notes, activeSession, mode]);
+  }, [tabItems, tabs, activeTab, connections, snippets, notes, activeSession, mode, activeLocal]);
 
   const inspectingId = useMemo(() => {
     const tab = tabs.find((one) => one.id === activeTab);
@@ -1164,6 +1211,24 @@ function App() {
               );
             }
 
+            if (tab.kind === "local") {
+              return pane(
+                <LocalView
+                  tabId={tab.id}
+                  initialCwd={tab.cwd}
+                  shell={settings.localShell}
+                  active={focused}
+                  termScheme={settings.termScheme}
+                  termVariant={termVariant}
+                  termFontSize={settings.termFontSize}
+                  termDivider={settings.termDivider}
+                  onCwd={(cwd) => setLocalCwd((map) => (map[tab.id] === cwd ? map : { ...map, [tab.id]: cwd }))}
+                  onLive={(ptyId) => setLocalPtys((map) => (map[tab.id] === ptyId ? map : { ...map, [tab.id]: ptyId }))}
+                  appMenu={appMenuFor(tab.id)}
+                />,
+              );
+            }
+
             if (tab.kind === "conn") {
               return pane(
                 <ConnectionPage
@@ -1200,6 +1265,8 @@ function App() {
                   onRestoreChange={(restoreTabs) => changeSettings({ restoreTabs })}
                   updateNotice={settings.updateNotice}
                   onUpdateNoticeChange={(updateNotice) => changeSettings({ updateNotice })}
+                  localShell={settings.localShell}
+                  onLocalShellChange={(localShell) => changeSettings({ localShell })}
                   hotkey={settings.hotkey}
                   hotkeyErr={hotkeyErr}
                   onHotkeyChange={(hotkey) => changeSettings({ hotkey })}

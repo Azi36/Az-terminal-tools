@@ -116,7 +116,9 @@ export type Tab =
   /** 内置编辑器：远程文件靠 sourceTabId 找到那条还活着的会话 */
   | { id: string; kind: "file"; side: "local" | "remote"; path: string; name: string; sourceTabId: string }
   /** 日志查看器：大到编辑器不肯开的远程文件走这条路，只读，按需一屏一屏取 */
-  | { id: string; kind: "log"; path: string; name: string; sourceTabId: string };
+  | { id: string; kind: "log"; path: string; name: string; sourceTabId: string }
+  /** 本地终端：本机起一个 shell，可以开好几个；cwd 是上次待的目录，恢复标签时从那儿起 */
+  | { id: string; kind: "local"; cwd?: string };
 
 /** 目录项：本地 / 远程同一套形状（由 Rust 侧给出） */
 export interface FsEntry {

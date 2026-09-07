@@ -126,6 +126,8 @@ export interface AppSettings {
   updateNotice: boolean;
   /** 侧栏收成一条图标栏；内容点图标时以浮层弹出 */
   sideCollapsed: boolean;
+  /** 本地终端用哪个 shell；空 = 自动（pwsh → PowerShell → $SHELL） */
+  localShell: string;
   /** 全局热键：不在前台也能把窗口叫出来。空字符串 = 不用 */
   hotkey: string;
   /** WebDAV 同步：文件的完整地址；空 = 没配 */
@@ -155,6 +157,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   restoreTabs: true,
   updateNotice: true,
   sideCollapsed: false,
+  localShell: "",
 };
 
 /**
@@ -187,6 +190,7 @@ function cleanSettings(raw: unknown): AppSettings {
     restoreTabs: bool(s.restoreTabs, D.restoreTabs),
     updateNotice: bool(s.updateNotice, D.updateNotice),
     sideCollapsed: bool(s.sideCollapsed, D.sideCollapsed),
+    localShell: str(s.localShell, D.localShell),
   };
 }
 
@@ -215,6 +219,7 @@ const TABS_KEY = "az-term-open-tabs";
 
 export type SavedTab =
   | { kind: "session"; connId: string; mode?: string }
+  | { kind: "local"; cwd?: string }
   | { kind: "note"; noteId: string }
   | { kind: "settings" };
 

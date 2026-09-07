@@ -32,6 +32,10 @@ interface TerminalProps {
   onInput?: (data: string) => void;
   /** 上层（会话 / 应用）想挂进右键菜单的条目，接在终端自己那几条后面 */
   extraMenu?: MenuEntry[];
+  /** 后端是 SSH 会话还是本地 PTY：命令名和事件名不同，参数名一样 */
+  transport?: "ssh" | "pty";
+  /** shell 通过 OSC 7 / OSC 9;9 上报当前目录时叫一声（本地终端用） */
+  onOsc?: (code: 7 | 9, data: string) => void;
 }
 
 /**
@@ -44,7 +48,14 @@ interface TerminalProps {
  * （Ctrl+C 中断、Ctrl+F 在 vim 里翻页），抢了就是给用户添堵。
  * 应用级的那些（换标签、命令面板……）见 shortcuts.ts，这儿只负责放行。
  */
-export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActivity, onInput, extraMenu }: TerminalProps) {
+export function Terminal({
+  sessionId, scheme, variant, fontSize, divider, onActivity, onInput, extraMenu, transport = "ssh", onOsc,
+}: TerminalProps) {
+  const writeCmd = transport === "pty" ? "pty_write" : "ssh_write";
+  const resizeCmd = transport === "pty" ? "pty_resize" : "ssh_resize";
+  const dataEvent = transport === "pty" ? "pty://data/" : "ssh://data/";
+  const oscRef = useRef(onOsc);
+  oscRef.current = onOsc;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -135,7 +146,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     typed.current = one;
     setHint(null);
     activity.current?.();
-    invoke("ssh_write", { sessionId, data: rest }).catch(() => {});
+    invoke(writeCmd, { sessionId, data: rest }).catch(() => {});
     echo.current?.(rest);
   };
   const takeHintRef = useRef(takeHint);
@@ -210,6 +221,18 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
       }),
     );
     term.open(host);
+    // 目录上报：OSC 7（file://host/path，bash）和 OSC 9;9;path（PowerShell / Windows Terminal 的约定）。
+    // 没人要的话原样放过，让 xterm 照常忽略
+    term.parser.registerOscHandler(7, (data) => {
+      if (!oscRef.current) return false;
+      oscRef.current(7, data);
+      return true;
+    });
+    term.parser.registerOscHandler(9, (data) => {
+      if (!oscRef.current || !data.startsWith("9;")) return false;
+      oscRef.current(9, data);
+      return true;
+    });
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
@@ -239,6 +262,9 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
         return false;
       }
       if (key === "v") {
+        // 拦掉浏览器自己的 paste 事件：Chromium 把 Ctrl+Shift+V 当「纯文本粘贴」，
+        // xterm 又监听着 paste 事件，不拦的话我们贴一遍、它再贴一遍
+        e.preventDefault();
         void paste();
         return false;
       }
@@ -260,7 +286,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     // 用户输入送往服务器；回车时顺手在本地画条分割线，把这条命令的输出圈出来
     const onData = term.onData((data) => {
       activity.current?.();
-      invoke("ssh_write", { sessionId, data }).catch(() => {});
+      invoke(writeCmd, { sessionId, data }).catch(() => {});
       echo.current?.(data);
       noteInput(data);
       if (dividerOn.current && data.includes("\r")) drawDivider(term);
@@ -271,7 +297,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     // 一个汉字被拆在两个包里也不会吐问号），这边拿到的直接是文本。
     let unlisten: UnlistenFn | undefined;
     let dead = false;
-    listen<string>(`ssh://data/${sessionId}`, (event) => {
+    listen<string>(`${dataEvent}${sessionId}`, (event) => {
       activity.current?.();
       term.write(event.payload);
     }).then((fn) => {
@@ -284,7 +310,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     const syncSize = () => {
       if (!host.clientWidth || !host.clientHeight) return;
       fit.fit();
-      invoke("ssh_resize", { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+      invoke(resizeCmd, { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
     };
     const observer = new ResizeObserver(syncSize);
     observer.observe(host);
@@ -295,7 +321,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     };
     window.addEventListener("az-term:focus", refocus);
 
-    invoke("ssh_resize", { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+    invoke(resizeCmd, { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
     term.focus();
 
     return () => {
@@ -324,9 +350,9 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     term.options.fontSize = fontSize;
     if (host?.clientWidth && host.clientHeight) {
       fitRef.current?.fit();
-      invoke("ssh_resize", { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+      invoke(resizeCmd, { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
     }
-  }, [scheme, variant, fontSize, sessionId]);
+  }, [scheme, variant, fontSize, sessionId, resizeCmd]);
 
   const find = (dir: 1 | -1) => {
     if (!query) return;
