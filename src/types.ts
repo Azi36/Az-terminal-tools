@@ -122,7 +122,9 @@ export type Tab =
   /** 数据库：一条连接一个标签，控制台 / 配置在里面 */
   | { id: string; kind: "db"; dbId: string; initialMode?: "console" | "config"; autoConnect?: boolean }
   /** 只用于「新建数据库连接」，存下来就变成 db 标签 */
-  | { id: string; kind: "dbconn"; dbId: null };
+  | { id: string; kind: "dbconn"; dbId: null }
+  /** 开始页：从这儿能开什么、最近用过什么 */
+  | { id: string; kind: "home" };
 
 // —— 数据库 ——
 export type DbKind = "mysql" | "postgres" | "redis";

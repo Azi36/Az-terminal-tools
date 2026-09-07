@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { IconFileEdit, IconFileText, IconServer, IconSettings, IconX, IconNote, IconTerminal, IconDatabase } from "./icons";
+import { IconFileEdit, IconFileText, IconServer, IconSettings, IconX, IconNote, IconTerminal, IconDatabase, IconHome } from "./icons";
 import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
 import { SHORTCUTS } from "../shortcuts";
 
 export interface TabItem {
   id: string;
   label: string;
-  kind: "session" | "note" | "file" | "log" | "conn" | "settings" | "local" | "db" | "dbconn";
+  kind: "session" | "note" | "file" | "log" | "conn" | "settings" | "local" | "db" | "dbconn" | "home";
   /** 会话标签没连上时用连接的标签色 */
   color?: string;
   /** 连着=绿 断了=红 */
@@ -28,9 +28,11 @@ interface TabBarProps {
   onSplit: (id: string) => void;
   onEndSplit: () => void;
   onFlipDir: () => void;
+  /** 标签栏空白处双击：开一个新标签（开始页） */
+  onBlank: () => void;
 }
 
-export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitId, splitDir, onSplit, onEndSplit, onFlipDir }: TabBarProps) {
+export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitId, splitDir, onSplit, onEndSplit, onFlipDir, onBlank }: TabBarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   if (items.length === 0) return null;
 
@@ -58,7 +60,12 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitI
     ]));
 
   return (
-    <div className="tab-bar">
+    <div
+      className="tab-bar"
+      // 只认真正的空白：点在标签上的双击不算（那是标签自己的事）
+      onDoubleClick={(e) => { if (e.target === e.currentTarget) onBlank(); }}
+      title=""
+    >
       {items.map((tab) => (
         <div
           key={tab.id}
@@ -86,6 +93,8 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitI
             <IconTerminal size={13} />
           ) : tab.kind === "db" || tab.kind === "dbconn" ? (
             <IconDatabase size={13} />
+          ) : tab.kind === "home" ? (
+            <IconHome size={13} />
           ) : tab.kind === "log" ? (
             <IconFileText size={13} />
           ) : tab.kind === "conn" ? (

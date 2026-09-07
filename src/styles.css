@@ -2091,3 +2091,51 @@ body.dragging-split .split-grip { background: var(--brand); }
 .redis-entry-cmd small { margin-left: auto; color: var(--text-3); font-size: 11px; }
 .redis-out { margin: 0; padding: 8px; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; color: var(--text); max-height: 320px; overflow: auto; }
 .redis-out.bad { color: var(--danger); }
+
+/* ---------- 开始页 ---------- */
+.home { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg); }
+.home-inner { max-width: 880px; margin: 0 auto; padding: 48px 32px 40px; display: grid; gap: 28px; }
+.home-head { display: flex; align-items: center; gap: 16px; }
+.home-mark { flex: none; }
+.home-head h1 {
+  margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.01em;
+  background: var(--grad-brand); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.home-head h1 span { -webkit-text-fill-color: initial; color: var(--text-2); font-weight: 600; }
+.home-head p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; }
+.home-head p small { margin-left: 8px; color: var(--text-3); }
+.home-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.home-card {
+  position: relative; display: grid; gap: 4px; justify-items: start; text-align: left;
+  padding: 16px 16px 14px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--bg-soft); color: var(--text); cursor: pointer;
+  transition: border-color .15s var(--ease), transform .15s var(--ease), background .15s var(--ease);
+}
+.home-card:hover { border-color: var(--brand); transform: translateY(-1px); }
+.home-card.primary { background: color-mix(in srgb, var(--brand) 10%, var(--bg-soft)); border-color: color-mix(in srgb, var(--brand) 40%, var(--border)); }
+.home-card-icon {
+  display: inline-grid; place-items: center; width: 34px; height: 34px; margin-bottom: 6px;
+  border-radius: 10px; background: var(--brand-soft); color: var(--brand);
+}
+.home-card b { font-size: 14px; }
+.home-card small { color: var(--text-3); font-size: 12px; line-height: 1.5; }
+.home-card kbd {
+  position: absolute; top: 12px; right: 12px;
+  font: 10.5px/1 ui-monospace, Consolas, monospace; padding: 3px 6px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-3);
+}
+.home-recent h3 { margin: 0 0 10px; font-size: 12px; color: var(--text-3); font-weight: 700; letter-spacing: .08em; }
+.home-recent-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
+.home-recent-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: transparent; color: var(--text);
+  cursor: pointer; text-align: left;
+}
+.home-recent-item:hover { background: var(--bg-hover); border-color: var(--text-3); }
+.home-recent-item > svg { color: var(--text-3); flex: none; }
+.home-recent-main { flex: 1; min-width: 0; display: grid; }
+.home-recent-main b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-recent-main small { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+.home-recent-item em { flex: none; font-style: normal; color: var(--text-3); font-size: 11px; }
+.home-tips { margin: 0; color: var(--text-3); font-size: 12px; line-height: 1.8; }
+.home-tips kbd { font: 11px/1 ui-monospace, Consolas, monospace; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-2); }

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Logo } from "./components/Logo";
 import {
   IconChevronDown, IconChevronRight, IconCommand, IconDatabase, IconNote, IconPlus, IconServer, IconSettings, IconArrowLeft, IconX, IconTerminal,
 } from "./components/icons";
@@ -47,6 +46,7 @@ import { LocalView } from "./views/LocalView";
 import { DbView } from "./views/DbView";
 import { DbPage } from "./views/DbPage";
 import { DbList } from "./components/DbList";
+import { HomeView } from "./views/HomeView";
 import type { MenuEntry } from "./components/ContextMenu";
 import { dropSecret } from "./secrets";
 import { checkRelease, type Release } from "./update";
@@ -298,6 +298,10 @@ function App() {
         case "newLocal":
           e.preventDefault();
           openLocal();
+          return;
+        case "newTab":
+          e.preventDefault();
+          openHome();
           return;
         case "sidebar":
           e.preventDefault();
@@ -857,6 +861,13 @@ function App() {
     openTab({ id: newId(), kind: "settings" });
   };
 
+  /** 开始页：只留一个，已经开着就切过去 */
+  const openHome = () => {
+    const existing = tabsRef.current.find((tab) => tab.kind === "home");
+    if (existing) { focusTab(existing.id); return; }
+    openTab({ id: newId(), kind: "home" });
+  };
+
   // —— 指令库 ——
   // 当前标签是编辑器的话，认它所属的那条会话 —— 边改配置边想敲条命令是常事，
   // 没道理因为焦点在编辑器上就把整个指令库变灰。
@@ -990,6 +1001,7 @@ function App() {
         if (tab.kind === "dbconn") return { id: tab.id, kind: "dbconn" as const, label: "新建数据库", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "conn") return { id: tab.id, kind: "conn" as const, label: "新建连接", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "settings") return { id: tab.id, kind: "settings" as const, label: "设置" };
+        if (tab.kind === "home") return { id: tab.id, kind: "home" as const, label: "开始" };
         if (tab.kind === "file") return { id: tab.id, kind: "file" as const, label: tab.name, dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "log") return { id: tab.id, kind: "log" as const, label: tab.name };
         const note = notes.find((one) => one.id === tab.noteId);
@@ -997,6 +1009,22 @@ function App() {
     });
   }, [tabs, connections, notes, dirtyTabs, sessions, dbs]);
 
+  /** 开始页的那堆入口，空工作区和开始页标签共用 */
+  const homeView = (
+    <HomeView
+      version={version}
+      connections={connections}
+      dbs={dbs}
+      onNewConn={openNewConn}
+      onOpenConn={openConn}
+      onLocal={() => openLocal()}
+      onNewDb={newDb}
+      onOpenDb={(db) => openDb(db)}
+      onNote={newNote}
+      onPalette={() => setPalette(true)}
+      onSettings={openSettings}
+    />
+  );
   // —— 命令面板的菜谱 ——
   // 每一项都指向一个已经存在的动作，面板本身不新增能力，只是把散在
   // 抽屉 / 页签 / 右键菜单里的入口收拢到一个搜索框里。
@@ -1087,6 +1115,7 @@ function App() {
       { id: "act:new", group: "动作", label: "新建连接", hint: SHORTCUTS.newConn, run: openNewConn },
       { id: "act:local", group: "动作", label: "新建本地终端", hint: SHORTCUTS.newLocal, run: () => openLocal() },
       { id: "act:newdb", group: "动作", label: "新建数据库连接", run: newDb },
+      { id: "act:home", group: "动作", label: "开始页", hint: SHORTCUTS.newTab, run: openHome },
       { id: "act:note", group: "动作", label: "新建备忘", run: newNote },
       { id: "act:settings", group: "动作", label: "设置", hint: SHORTCUTS.settings, run: openSettings },
       { id: "act:side", group: "动作", label: settings.sideCollapsed ? "展开侧栏" : "收起侧栏", hint: SHORTCUTS.sidebar, run: toggleSide },
@@ -1237,6 +1266,7 @@ function App() {
           onSplit={putInSplit}
           onEndSplit={endSplit}
           onFlipDir={() => setSplitDir((one) => (one === "row" ? "col" : "row"))}
+          onBlank={openHome}
         />
 
         <div className={`tab-stack ${splitTab ? `split ${splitDir}` : ""}`}>
@@ -1361,6 +1391,8 @@ function App() {
               );
             }
 
+            if (tab.kind === "home") return pane(homeView);
+
             if (tab.kind === "settings") {
               return pane(
                 <Settings
@@ -1453,14 +1485,7 @@ function App() {
             />
           )}
 
-          {tabs.length === 0 && (
-            <div className="welcome">
-              <span className="welcome-mark"><Logo size={56} /></span>
-              <h1>Az<span>Term</span></h1>
-              <p>SSH · SFTP · 指令库 · 备忘录，免费无账号不过期。</p>
-              <p className="dim">v{version} —— 左边单击打开，双击直接连。</p>
-            </div>
-          )}
+          {tabs.length === 0 && homeView}
         </div>
       </main>
 
