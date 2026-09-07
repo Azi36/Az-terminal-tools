@@ -17,6 +17,16 @@ export interface Connection {
   encoding?: string;
   /** 先过哪台跳板机（另一条连接的 id）；不填就直连 */
   jumpId?: string;
+  /**
+   * 把 shell 跑在 tmux / screen 里：断线时服务器那边的活儿还在，
+   * 重连会接回同一个会话而不是开一个新的。不填就是普通 shell。
+   */
+  persist?: "tmux" | "screen";
+  /**
+   * 连上之后自动往终端里敲的命令，一行一条。
+   * 明文存在配置里，所以别往这儿写密码 —— 要密码就让命令自己去读钥匙串/环境变量。
+   */
+  initCommand?: string;
   /** 这台机器配的端口转发 */
   tunnels?: Tunnel[];
   createdAt: number;
@@ -82,8 +92,8 @@ export interface Bookmark {
   label: string;
 }
 
-/** 会话标签里的四页 */
-export type SessionMode = "term" | "files" | "tunnel" | "config";
+/** 会话标签里的五页 */
+export type SessionMode = "term" | "files" | "stats" | "tunnel" | "config";
 
 /**
  * 叫醒一个已经开着的会话标签：去哪一页、要不要顺手连上。
@@ -104,7 +114,9 @@ export type Tab =
   | { id: string; kind: "settings" }
   | { id: string; kind: "note"; noteId: string }
   /** 内置编辑器：远程文件靠 sourceTabId 找到那条还活着的会话 */
-  | { id: string; kind: "file"; side: "local" | "remote"; path: string; name: string; sourceTabId: string };
+  | { id: string; kind: "file"; side: "local" | "remote"; path: string; name: string; sourceTabId: string }
+  /** 日志查看器：大到编辑器不肯开的远程文件走这条路，只读，按需一屏一屏取 */
+  | { id: string; kind: "log"; path: string; name: string; sourceTabId: string };
 
 /** 目录项：本地 / 远程同一套形状（由 Rust 侧给出） */
 export interface FsEntry {
@@ -157,3 +169,16 @@ export const DEFAULT_GROUP = "默认";
 /** 用户名留空就按它连 —— 十有八九就是 root，没必要逼着人敲一遍 */
 export const DEFAULT_USER = "root";
 export const DEFAULT_TAG = "常用";
+
+export const PERSIST_KINDS: { value: "" | "tmux" | "screen"; label: string; hint: string }[] = [
+  { value: "", label: "不用", hint: "普通 shell。断线时正在跑的命令会跟着没" },
+  { value: "tmux", label: "tmux", hint: "断了活儿还在，重连接回同一个会话（tmux new-session -A）" },
+  { value: "screen", label: "screen", hint: "同上，给没装 tmux 的老机器用（screen -xRR）" },
+];
+
+/**
+ * 这条连接固定用哪个持久会话名。
+ * 必须是稳定的 —— 每次算出来的不一样的话，重连就接不回原来那个了。
+ * 只取 id 的前 8 位十六进制，够分辨，也在 tmux 的命名规矩里。
+ */
+export const persistNameOf = (connId: string) => `az-${connId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "default"}`;

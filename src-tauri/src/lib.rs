@@ -9,10 +9,16 @@
 mod creds;
 mod encoding;
 mod hosts;
+mod importers;
 mod localfs;
+mod logs;
+mod remote;
 mod sftp;
 mod ssh;
 mod sshconfig;
+mod stats;
+mod sync;
+mod vault;
 mod tunnel;
 
 /// 前端探活：确认 Rust 引擎在线
@@ -32,6 +38,10 @@ pub fn run() {
         .setup(|app| {
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            // 全局热键：注册和响应都在前端做（哪个键、按了要干什么都是界面的事），
+            // 这儿只把插件挂上
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            app.handle().plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
             let _ = app;
             Ok(())
         })
@@ -88,7 +98,29 @@ pub fn run() {
             creds::creds_has,
             creds::creds_forget,
             hosts::hosts_forget,
+            importers::import_scan,
             sshconfig::ssh_config_hosts,
+            stats::stats_probe,
+            stats::stats_sample,
+            stats::stats_processes,
+            stats::stats_kill,
+            stats::stats_ports,
+            stats::stats_services,
+            stats::stats_service_do,
+            stats::stats_docker,
+            stats::stats_docker_do,
+            stats::stats_docker_logs,
+            stats::stats_net_probe,
+            stats::stats_du,
+            logs::log_read,
+            logs::log_grep,
+            sync::sync_put_saved,
+            sync::sync_get_saved,
+            sync::sync_save_password,
+            sync::sync_has_password,
+            vault::vault_seal,
+            vault::vault_open,
+            vault::vault_is_sealed,
             tunnel::tunnel_open,
             tunnel::tunnel_close,
             tunnel::tunnel_list,

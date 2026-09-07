@@ -5,17 +5,29 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "../components/Terminal";
 import { SftpPanel } from "./SftpPanel";
 import { ConnectionPage } from "./ConnectionPage";
+import { StatsPanel } from "./StatsPanel";
 import { TunnelPanel } from "./TunnelPanel";
-import { IconCheck, IconFiles, IconKey, IconLink, IconLock, IconSettings, IconTerminal, IconX } from "../components/icons";
+import {
+  IconCheck, IconFiles, IconGauge, IconKey, IconLink, IconLock, IconSettings, IconTerminal, IconX,
+} from "../components/icons";
+import { Dialog } from "../components/Dialog";
+import type { MenuEntry } from "../components/ContextMenu";
+import { PAGE_SHORTCUTS } from "../shortcuts";
+import { newId } from "../store";
 import { takeSecret } from "../secrets";
-import { DEFAULT_ENCODING, ENCODINGS, type Connection, type Wake } from "../types";
+import { DEFAULT_ENCODING, ENCODINGS, persistNameOf, type Connection, type Tunnel, type Wake } from "../types";
 
-type Mode = "term" | "files" | "config" | "tunnel";
+type Mode = "term" | "files" | "stats" | "config" | "tunnel";
 
 interface SessionViewProps {
   conn: Connection;
-  /** 这个标签是不是正显示着 —— 空闲唤醒、拖拽上传都要看它 */
+  /**
+   * 有没有焦点。分屏时两块都在屏幕上，但只有一块是「当前」——
+   * 拖拽上传、Del / F2 这类快捷键都得认焦点，两块都接就不知道该落到谁头上。
+   */
   active: boolean;
+  /** 在不在屏幕上（分屏时另一半也算）。只看不动手的东西（状态轮询）认它就够了 */
+  visible: boolean;
   /** 空闲多少分钟自动断开；0 = 不断 */
   idleMinutes: number;
   /** 终端配色方案 id 和字号 */
@@ -41,12 +53,24 @@ interface SessionViewProps {
   onSession: (sessionId: string | null) => void;
   /** 文件面板里点了「编辑」→ 上层开一个编辑器标签 */
   onEditFile: (side: "local" | "remote", path: string) => void;
+  /** 文件面板里点了「日志查看器」→ 上层开一个只读的大文件标签 */
+  onOpenLog: (path: string) => void;
+  /** 这个标签在不在同步输入组里 */
+  inSync: boolean;
+  /** 同步组里此刻有几台连着的（含自己）；小于 2 就等于没开 */
+  syncCount: number;
+  /** 把这个标签加入 / 移出同步组 */
+  onToggleSync: () => void;
+  /** 用户在这个终端里敲的东西，转给同步组里的其它会话 */
+  onBroadcast: (data: string) => void;
   /** 配了跳板机的话，那条连接的配置（上层按 jumpId 找出来给我们） */
   jump?: Connection | null;
   onSaveConn: (conn: Connection) => void;
   onDeleteConn: (conn: Connection) => void;
   /** 配置页有没有没保存的改动 */
   onConfigDirty: (dirty: boolean) => void;
+  /** 应用级的右键菜单条目（命令面板、新建连接……），接在终端菜单最后 */
+  appMenu?: MenuEntry[];
 }
 
 interface HostKeyInfo {
@@ -86,6 +110,7 @@ type Phase =
 export function SessionView({
   conn,
   active,
+  visible,
   idleMinutes,
   termScheme,
   termVariant,
@@ -101,9 +126,15 @@ export function SessionView({
   jump,
   onSession,
   onEditFile,
+  onOpenLog,
+  inSync,
+  syncCount,
+  onToggleSync,
+  onBroadcast,
   onSaveConn,
   onDeleteConn,
   onConfigDirty,
+  appMenu,
 }: SessionViewProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const phaseRef = useRef(phase);
@@ -139,6 +170,8 @@ export function SessionView({
   const [askAuth, setAskAuth] = useState<AuthPrompts | null>(null);
   /** 掉线后自动重连的倒计时；null = 没在重连 */
   const [retry, setRetry] = useState<{ left: number; seconds: number } | null>(null);
+  /** 端口表点了「转发到本地」，等用户确认本地开哪个口 */
+  const [forwarding, setForwarding] = useState<{ port: number; label: string } | null>(null);
   /** 会话日志开着没有 */
   const [logging, setLogging] = useState(false);
   const [logErr, setLogErr] = useState<string | null>(null);
@@ -150,6 +183,12 @@ export function SessionView({
   savedRef.current = saved;
   /** 认证没走完那条连接的 id：用户答完题要拿它接着往下认 */
   const attempt = useRef<{ sessionId: string; typed: string; silent: boolean } | null>(null);
+  /** 「登录后执行」那一下的定时器；断开 / 卸载时要撤掉，不能敲进下一条会话 */
+  const kickoff = useRef<number | null>(null);
+  const dropKickoff = () => {
+    if (kickoff.current !== null) window.clearTimeout(kickoff.current);
+    kickoff.current = null;
+  };
 
   /** 连上了：收拾输入框、挂上会话 */
   const settle = useCallback((sessionId: string) => {
@@ -176,7 +215,20 @@ export function SessionView({
       if (next === "files") setFilesMounted(true);
       return next;
     });
-  }, [conn.protocol, remember]);
+
+    // 「登录后执行」：走 ssh_write 当成用户自己敲的，命令和回显都留在终端里，
+    // 编码转换也跟着这条会话走（GBK 的机器上照样能敲中文路径）。
+    // 缓一下再敲 —— 登录 banner 和第一个提示符还在路上，抢在前头会跟 motd 挤成一行。
+    const script = (conn.initCommand ?? "").trim();
+    if (script) {
+      dropKickoff();
+      kickoff.current = window.setTimeout(() => {
+        kickoff.current = null;
+        const data = `${script.replace(/\r\n?/g, "\n").replace(/\n+$/, "")}\n`;
+        void invoke("ssh_write", { sessionId, data }).catch(() => {});
+      }, 400);
+    }
+  }, [conn.protocol, conn.initCommand, remember]);
 
   /** 认证失败 / 断在半路：统一在这儿分流成「问指纹」「问验证码」「报错」 */
   const stumble = useCallback((e: unknown) => {
@@ -242,6 +294,9 @@ export function SessionView({
           trustFingerprint: trustHost ? askHost?.fingerprint ?? null : null,
           hostPolicy,
           encoding,
+          // 断线重连要接回同一个持久会话，所以名字必须是这条连接固定的那个
+          persist: conn.persist ?? null,
+          persistName: conn.persist ? persistNameOf(conn.id) : null,
           // 配了跳板机就把那条连接的信息带上；它的密码从钥匙串里取，不在这儿传
           jump: jump
             ? {
@@ -295,11 +350,12 @@ export function SessionView({
   }, [connect]);
 
   // 标签关掉时这条连接还开着、还在连、或还在答验证码：App 那边只认已登记的会话，
-  // 半截的得自己收，否则引擎里会漏一条连接一直挂到退出
+  // 半截的得自己收，否则引擎里会漏一条连接一直挂到退出。登录后自动执行的计时器也一并清掉
   useEffect(() => () => {
     const live = phaseRef.current;
     if (live.kind === "open") invoke("ssh_close", { sessionId: live.sessionId }).catch(() => {});
     if (attempt.current) invoke("ssh_cancel_auth", { sessionId: attempt.current.sessionId }).catch(() => {});
+    if (kickoff.current !== null) window.clearTimeout(kickoff.current);
   }, []);
 
   // 开标签先问钥匙串：记过密码（或用密钥）且这次是奔着连来的，就直接连上
@@ -425,6 +481,7 @@ export function SessionView({
   const disconnect = async () => {
     // 标一下：接下来那个 close 事件是我自己弄的，别触发自动重连
     byHand.current = true;
+    dropKickoff();
     setRetry(null);
     setLogging(false);
     if (open) await invoke("ssh_close", { sessionId: phase.sessionId }).catch(() => {});
@@ -454,6 +511,45 @@ export function SessionView({
     setMode("files");
     if (open) { setFilesMounted(true); return; }
     if (!connecting && conn.protocol !== "ftp" && (isKey || saved)) void connect(true);
+  };
+
+  /** 真的在广播：自己在组里，而且组里不止自己一台 */
+  const casting = open && inSync && syncCount > 1;
+
+  // 终端右键菜单里会话这一层的条目：几页之间切换、断开。键位跟工具条上的提示一致
+  const termMenu: MenuEntry[] = [
+    { label: "文件面板", hint: PAGE_SHORTCUTS.files, onClick: goFiles },
+    { label: "状态", hint: PAGE_SHORTCUTS.stats, onClick: () => setMode("stats") },
+    { label: "隧道", hint: PAGE_SHORTCUTS.tunnel, onClick: () => setMode("tunnel") },
+    { label: "这条连接的配置", hint: PAGE_SHORTCUTS.config, onClick: () => setMode("config") },
+    null,
+    { label: "断开连接", danger: true, onClick: () => void disconnect() },
+    ...(appMenu && appMenu.length > 0 ? [null, ...appMenu] : []),
+  ];
+
+  /**
+   * 端口表 →「转发到本地」。
+   *
+   * 本地口默认跟远端同号（好记）；1024 以下的除外 —— macOS / Linux 上绑那一段要 root，
+   * 直接给个 10000+ 的同尾号（80 → 10080），比让人撞一次「权限不足」强。
+   */
+  const suggestLocal = (remote: number) => (remote >= 1024 ? remote : remote + 10000);
+
+  const doForward = (localPort: number) => {
+    if (!forwarding) return;
+    const one: Tunnel = {
+      id: newId(),
+      kind: "local",
+      listenHost: "127.0.0.1",
+      listenPort: localPort,
+      destHost: "127.0.0.1",
+      destPort: forwarding.port,
+    };
+    setForwarding(null);
+    // 先存进配置再切过去：隧道面板是照着 conn.tunnels 画的，
+    // 存之前切过去会看到一个空位，然后那一行才「跳」出来
+    onSaveConn({ ...conn, tunnels: [...(conn.tunnels ?? []), one] });
+    setMode("tunnel");
   };
 
   const connecting = phase.kind === "connecting";
@@ -507,12 +603,12 @@ export function SessionView({
         <span className="session-meta">{conn.username}@{conn.host}</span>
 
         <div className="seg mini">
-          <button type="button" title="终端" className={mode === "term" ? "on" : ""} onClick={() => setMode("term")}>
+          <button type="button" title={`终端 · ${PAGE_SHORTCUTS.term}`} className={mode === "term" ? "on" : ""} onClick={() => setMode("term")}>
             <IconTerminal size={13} />终端
           </button>
           <button
             type="button"
-            title={open ? "文件（SFTP）" : "直接进文件面板，没连的话顺手连上"}
+            title={`${open ? "文件（SFTP）" : "直接进文件面板，没连的话顺手连上"} · ${PAGE_SHORTCUTS.files}`}
             className={mode === "files" ? "on" : ""}
             onClick={goFiles}
           >
@@ -520,14 +616,22 @@ export function SessionView({
           </button>
           <button
             type="button"
-            title="端口转发 / SOCKS 代理"
+            title={`${open ? "CPU / 内存 / 磁盘 / 进程" : "连上之后能看这台机器的实时状态"} · ${PAGE_SHORTCUTS.stats}`}
+            className={mode === "stats" ? "on" : ""}
+            onClick={() => setMode("stats")}
+          >
+            <IconGauge size={13} />状态
+          </button>
+          <button
+            type="button"
+            title={`端口转发 / SOCKS 代理 · ${PAGE_SHORTCUTS.tunnel}`}
             className={mode === "tunnel" ? "on" : ""}
             onClick={() => setMode("tunnel")}
           >
             <IconLink size={13} />隧道
             {(conn.tunnels?.length ?? 0) > 0 && <i className="seg-badge">{conn.tunnels?.length}</i>}
           </button>
-          <button type="button" title="这条连接的配置" className={mode === "config" ? "on" : ""} onClick={() => setMode("config")}>
+          <button type="button" title={`这条连接的配置 · ${PAGE_SHORTCUTS.config}`} className={mode === "config" ? "on" : ""} onClick={() => setMode("config")}>
             <IconSettings size={13} />配置
           </button>
         </div>
@@ -547,6 +651,23 @@ export function SessionView({
               <option key={one.value} value={one.value}>{one.label}</option>
             ))}
           </select>
+        )}
+
+        {open && (
+          <button
+            className={`sync-btn ${inSync ? "on" : ""} ${casting ? "live" : ""}`}
+            type="button"
+            onClick={onToggleSync}
+            title={
+              inSync
+                ? syncCount > 1
+                  ? `同步组里有 ${syncCount} 台，你敲的东西会同时发过去。点一下把这台退出去`
+                  : "这台已经在同步组里了，再把另一台也加进来才会开始广播"
+                : "把这台加入同步组：组里有两台以上时，在任一台里敲的东西会同时发给其它台"
+            }
+          >
+            同步{inSync && syncCount > 1 ? ` ${syncCount}` : ""}
+          </button>
         )}
 
         {open && (
@@ -581,6 +702,14 @@ export function SessionView({
       <div className="session-body" onMouseDown={touch}>
         {open && (
           <div className="session-pane" style={{ display: mode === "term" ? "flex" : "none" }}>
+            {/* 广播开着的时候给一条显眼的横幅：往十台生产机同时敲 rm 是真会发生的事，
+                这个状态绝不能只靠一个小按钮的高亮来提示 */}
+            {casting && (
+              <div className="sync-banner">
+                你敲的每一个字会同时发给 <b>{syncCount}</b> 台机器
+                <button type="button" onClick={onToggleSync}>把这台退出去</button>
+              </div>
+            )}
             <Terminal
               sessionId={phase.sessionId}
               scheme={termScheme}
@@ -588,6 +717,8 @@ export function SessionView({
               fontSize={termFontSize}
               divider={termDivider}
               onActivity={touch}
+              onInput={casting ? onBroadcast : undefined}
+              extraMenu={termMenu}
             />
           </div>
         )}
@@ -741,9 +872,28 @@ export function SessionView({
               lanes={xferLanes}
               onActivity={touch}
               onEditFile={onEditFile}
+              onOpenLog={onOpenLog}
             />
           </div>
         )}
+
+        {/* 没连上就让上面那张连接卡说话，别在这儿摆一个空面板 */}
+        <div className="session-pane" style={{ display: open && mode === "stats" ? "flex" : "none" }}>
+          <StatsPanel
+            sessionId={open ? phase.sessionId : null}
+            active={visible && mode === "stats"}
+            onActivity={touch}
+            onForward={(port, label) => setForwarding({ port, label })}
+            onRunInTerminal={(command) => {
+              // 交互式的东西（docker exec -it）得在真终端里跑：
+              // 状态面板那条通道后面没有 PTY，在那儿执行只会挂住
+              if (!open) return;
+              setMode("term");
+              void invoke("ssh_write", { sessionId: phase.sessionId, data: `${command}
+` }).catch(() => {});
+            }}
+          />
+        </div>
 
         <div className="session-pane" style={{ display: mode === "tunnel" ? "flex" : "none" }}>
           <TunnelPanel
@@ -766,6 +916,29 @@ export function SessionView({
           />
         </div>
       </div>
+
+      {forwarding && (
+        <Dialog
+          title={`把 ${forwarding.port} 转发到本地`}
+          message={
+            `连本机这个端口，等于连 ${conn.host} 上的 ${forwarding.port}` +
+            `${forwarding.label ? `（${forwarding.label}）` : ""}。
+` +
+            "存进这条连接的隧道里，之后在「隧道」页随时开关。"
+          }
+          input={{
+            label: "本地开哪个口",
+            initial: String(suggestLocal(forwarding.port)),
+            hint: "1024 以下的端口在 macOS / Linux 上要 root 才绑得住",
+          }}
+          confirmText="建这条隧道"
+          onConfirm={(value) => {
+            const port = Number(value);
+            if (Number.isFinite(port) && port > 0 && port < 65536) doForward(port);
+          }}
+          onClose={() => setForwarding(null)}
+        />
+      )}
     </div>
   );
 }

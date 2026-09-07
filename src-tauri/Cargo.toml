@@ -31,8 +31,18 @@ hmac = "0.12"
 sha1 = "0.10"
 data-encoding = "2"
 
+# —— 加密导出：备份文件里没有密码，但主机名 / 用户名 / 内网拓扑本身就是情报 ——
+# Argon2id 扛暴力猜口令，XChaCha20-Poly1305 负责实际加解密并带完整性校验。
+# 只是把成熟原语按标准用法组装，不自己发明算法。
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+
 # 终端和文本文件的字符编码：老服务器上大把 GBK，硬按 UTF-8 读就是一屏乱码
 encoding_rs = "0.8"
+
+# —— WebDAV 同步：只做 PUT / GET 两个请求，用不着整套 HTTP 客户端 ——
+# ureq 是阻塞式的、自带 rustls，依赖树比 reqwest 小一大截；调用处放 spawn_blocking。
+ureq = "2"
 
 # 选文件 / 选保存位置：私钥路径、配置导出导入都要用系统对话框
 tauri-plugin-dialog = "2"
@@ -48,6 +58,11 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+
+# —— 全局热键：不在前台也能把窗口叫出来（Quake 模式）——
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
 
 # —— 自动更新：只有桌面版需要 ——
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]

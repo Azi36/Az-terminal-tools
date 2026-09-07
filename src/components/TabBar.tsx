@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { IconFileEdit, IconServer, IconSettings, IconX, IconNote, IconTerminal } from "./icons";
+import { IconFileEdit, IconFileText, IconServer, IconSettings, IconX, IconNote, IconTerminal } from "./icons";
 import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
+import { SHORTCUTS } from "../shortcuts";
 
 export interface TabItem {
   id: string;
   label: string;
-  kind: "session" | "note" | "file" | "conn" | "settings";
+  kind: "session" | "note" | "file" | "log" | "conn" | "settings";
   /** 会话标签没连上时用连接的标签色 */
   color?: string;
   /** 连着=绿 断了=红 */
@@ -21,15 +22,29 @@ interface TabBarProps {
   onClose: (id: string) => void;
   /** 一次关一批：没保存的改动由上层一次问清楚 */
   onCloseMany: (ids: string[]) => void;
+  /** 分屏另一半摆的是哪个标签；null = 没分屏 */
+  splitId: string | null;
+  splitDir: "row" | "col";
+  onSplit: (id: string) => void;
+  onEndSplit: () => void;
+  onFlipDir: () => void;
 }
 
-export function TabBar({ items, activeId, onSelect, onClose, onCloseMany }: TabBarProps) {
+export function TabBar({ items, activeId, onSelect, onClose, onCloseMany, splitId, splitDir, onSplit, onEndSplit, onFlipDir }: TabBarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   if (items.length === 0) return null;
 
   const openMenu = (id: string, e: React.MouseEvent) =>
     setMenu(menuAt(e, [
-      { label: "关闭", hint: "中键也行", onClick: () => onClose(id) },
+      id === splitId
+        ? { label: "取消分屏", onClick: onEndSplit }
+        : {
+            label: splitDir === "row" ? "在右边分屏打开" : "在下边分屏打开",
+            // 分屏是「另一半摆什么」，自己跟自己分不出两块来
+            disabled: id === activeId || items.length < 2,
+            onClick: () => onSplit(id),
+          },
+      { label: "关闭", hint: id === activeId ? SHORTCUTS.closeTab : "中键也行", onClick: () => onClose(id) },
       {
         label: "关闭其他",
         disabled: items.length < 2,
@@ -67,6 +82,8 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany }: TabB
             </>
           ) : tab.kind === "file" ? (
             <IconFileEdit size={13} />
+          ) : tab.kind === "log" ? (
+            <IconFileText size={13} />
           ) : tab.kind === "conn" ? (
             <IconServer size={13} />
           ) : tab.kind === "settings" ? (
@@ -75,6 +92,7 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany }: TabB
             <IconNote size={13} />
           )}
           <span className="tab-label">{tab.label}</span>
+          {tab.id === splitId && <span className="tab-split" title="正摆在分屏的另一半">◧</span>}
           {tab.dirty && <span className="dot-dirty" title="还没存" />}
           <button
             className="tab-close"
@@ -86,6 +104,16 @@ export function TabBar({ items, activeId, onSelect, onClose, onCloseMany }: TabB
           </button>
         </div>
       ))}
+      {splitId && (
+        <div className="tab-bar-acts">
+          <button type="button" onClick={onFlipDir} title={splitDir === "row" ? "改成上下分" : "改成左右分"}>
+            {splitDir === "row" ? "◧" : "⬒"}
+          </button>
+          <button type="button" onClick={onEndSplit} title="取消分屏">
+            <IconX size={12} />
+          </button>
+        </div>
+      )}
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </div>
   );

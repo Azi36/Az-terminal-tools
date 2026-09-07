@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "../components/Dialog";
-import { IconEdit, IconPlay, IconPlus, IconTrash, IconX } from "../components/icons";
+import { IconArrowUpRight, IconEdit, IconPlay, IconPlus, IconTrash, IconX } from "../components/icons";
 import { newId } from "../store";
 import { TUNNEL_KINDS, type Tunnel, type TunnelKind } from "../types";
 
@@ -191,6 +192,19 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
                         {state?.error && <small className="tun-err">{state.error}</small>}
                       </div>
                       <div className="tun-acts">
+                        {/* 转发出来的十有八九是个网页服务（面板、API、数据库的 web UI），
+                            开着的时候直接给个入口，省得再去地址栏敲一遍 */}
+                        {running && one.kind === "local" && (
+                          <button
+                            className="icon-btn sm"
+                            type="button"
+                            aria-label="在浏览器里打开"
+                            title={`在浏览器里打开 http://${one.listenHost || "127.0.0.1"}:${one.listenPort}`}
+                            onClick={() => void openUrl(`http://${one.listenHost || "127.0.0.1"}:${one.listenPort}`)}
+                          >
+                            <IconArrowUpRight size={14} />
+                          </button>
+                        )}
                         <button
                           className={running ? "btn-ghost sm" : "btn-primary sm"}
                           type="button"

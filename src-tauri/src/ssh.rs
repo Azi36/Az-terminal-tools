@@ -4,7 +4,10 @@
 //! - 凭据（密码 / 私钥）仅在内存中流转，不落盘、不写日志。
 //! - 主机公钥对着 `~/.ssh/known_hosts` 校验；用户点「信任」时会把他核对过的那串指纹
 //!   带回来比对，服务器临时换一把钥匙糊弄不过去。
-//! - 引擎只负责连接与字节流转发，不预置、不注入任何命令。
+//! - 引擎只负责连接与字节流转发，**唯一**会替用户发出的命令是「持久会话」那一条
+//!   （`tmux new-session -A -s …` / `screen -xRR …`），而且必须是用户在连接配置里
+//!   明确选了才发；会话名只放行 `[A-Za-z0-9_-]`，不接受任意字符串拼进命令行。
+//!   「登录后执行」那种用户自己写的命令走的是 ssh_write，跟他手敲没有区别，不在这儿。
 //!
 //! 认证支持三条路：公钥、密码、键盘交互（keyboard-interactive）。
 //! 键盘交互是很多服务器唯一开着的那条（`PasswordAuthentication no` +
@@ -211,6 +214,20 @@ impl SshState {
         self.sessions.lock().await.get(session_id).map(|s| s.handle.clone())
     }
 
+    /// 这条会话此刻用的编码。状态面板取回来的进程命令行、挂载点都可能带中文，
+    /// 一律按 UTF-8 解在 GBK 的机器上就是一片问号。
+    pub(crate) async fn encoding_of(&self, session_id: &str) -> &'static encoding_rs::Encoding {
+        let map = self.sessions.lock().await;
+        let Some(session) = map.get(session_id) else {
+            return crate::encoding::resolve(None);
+        };
+        let picked = session.encoding.lock();
+        match picked {
+            Ok(guard) => *guard,
+            Err(_) => crate::encoding::resolve(None),
+        }
+    }
+
     /// 记一条远程转发：服务器那边进来的连接该落到本机哪儿
     pub(crate) async fn add_remote_forward(
         &self,
@@ -388,6 +405,10 @@ pub struct ConnectParams {
     pub encoding: Option<String>,
     /// 要先过一台跳板机的话，填它
     pub jump: Option<JumpParams>,
+    /// 把 shell 跑在 "tmux" / "screen" 里；不填就是普通 shell
+    pub persist: Option<String>,
+    /// 复用哪个会话名。同一条连接每次都用同一个，断线重连才接得回原来那个
+    pub persist_name: Option<String>,
 }
 
 /// 跳板机（ProxyJump / 堡垒机）。
@@ -405,6 +426,43 @@ pub struct JumpParams {
     pub auth_type: String,
     pub key_path: Option<String>,
     pub host_policy: Option<String>,
+}
+
+/// 把 shell 换成 tmux / screen。
+///
+/// 断线时服务器那边的活儿还在，重连 `-A` / `-xRR` 会接回同一个会话，
+/// 而不是开一个新的、把上一个丢在那儿。
+///
+/// 机器上没装的话不能就这么把终端撂在那儿 —— 说一句，然后退回普通 shell，
+/// 用户至少还有个能用的终端。
+fn persist_command(kind: &str, name: &str) -> String {
+    let quoted = crate::remote::quote(name);
+    let (tool, run) = if kind == "screen" {
+        ("screen", format!("exec screen -xRR {quoted}"))
+    } else {
+        ("tmux", format!("exec tmux new-session -A -s {quoted}"))
+    };
+    // SHELL 有可能是空的（某些容器镜像），兜一个 /bin/sh
+    let script = format!(
+        "command -v {tool} >/dev/null 2>&1 && {run}; echo '[AzTerm] 这台机器上没有 {tool}，退回普通 shell'; exec \"${{SHELL:-/bin/sh}}\" -l"
+    );
+    // exec 请求走的是 sshd 的 `$SHELL -c`：登录 shell 是 fish / tcsh 时，上面这段 POSIX 写法
+    // （`${SHELL:-…}`、`2>&1`）是语法错误，通道立刻被关，连"退回普通 shell"都跑不到。
+    // 显式交给 /bin/sh 跑，里面再 exec 回用户自己的 shell
+    format!("exec /bin/sh -c {}", crate::remote::quote(&script))
+}
+
+/// 会话名要拼进命令行，只放行这些字符。
+/// tmux 自己也不收 `.` 和 `:`，所以这个范围比它还严一点没坏处。
+fn safe_persist_name(name: Option<&str>) -> Option<String> {
+    let name = name?.trim();
+    if name.is_empty() || name.len() > 64 {
+        return None;
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// 认证走完了，还是还得再问
@@ -718,10 +776,23 @@ async fn finish(
         .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
         .await
         .map_err(|e| SshError::new("申请 PTY 失败", e))?;
-    channel
-        .request_shell(true)
-        .await
-        .map_err(|e| SshError::new("启动 shell 失败", e))?;
+    // 要么起普通 shell，要么把 shell 换成 tmux / screen（断线不丢活儿）
+    match params.persist.as_deref() {
+        Some(kind) if kind == "tmux" || kind == "screen" => {
+            let name = safe_persist_name(params.persist_name.as_deref())
+                .ok_or_else(|| SshError::plain("持久会话的名字不合规矩，没往下发"))?;
+            channel
+                .exec(true, persist_command(kind, &name))
+                .await
+                .map_err(|e| SshError::new("启动持久会话失败", e))?;
+        }
+        _ => {
+            channel
+                .request_shell(true)
+                .await
+                .map_err(|e| SshError::new("启动 shell 失败", e))?;
+        }
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
     let encoding = Arc::new(std::sync::Mutex::new(crate::encoding::resolve(params.encoding.as_deref())));
@@ -909,6 +980,32 @@ pub async fn ssh_close(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persist_name_only_takes_safe_chars() {
+        use super::safe_persist_name;
+        assert_eq!(safe_persist_name(Some("az-3f2a1b9c")).as_deref(), Some("az-3f2a1b9c"));
+        assert_eq!(safe_persist_name(Some(" az_1 ")).as_deref(), Some("az_1"));
+        // 这几个都是拼进命令行会出事的
+        assert!(safe_persist_name(Some("a; rm -rf /")).is_none());
+        assert!(safe_persist_name(Some("a b")).is_none());
+        assert!(safe_persist_name(Some("$(id)")).is_none());
+        assert!(safe_persist_name(Some("")).is_none());
+        assert!(safe_persist_name(None).is_none());
+    }
+
+    #[test]
+    fn persist_command_falls_back_to_a_shell() {
+        use super::persist_command;
+        let cmd = persist_command("tmux", "az-1");
+        // 整段交给 /bin/sh：登录 shell 是 fish 的机器上 POSIX 写法才不会当场报错
+        assert!(cmd.starts_with("exec /bin/sh -c '"));
+        assert!(cmd.contains("tmux new-session -A -s"));
+        assert!(cmd.contains("az-1"));
+        // 没装的机器上不能把终端撂在那儿，要退回普通 shell
+        assert!(cmd.contains("exec \"${SHELL:-/bin/sh}\" -l"));
+        assert!(persist_command("screen", "az-1").contains("screen -xRR"));
+    }
+
     use super::*;
 
     #[test]

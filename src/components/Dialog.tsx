@@ -6,7 +6,7 @@ export interface DialogSpec {
   /** 说明文字，可省 */
   message?: string;
   /** 要输入内容时给上，纯确认弹窗就不给 */
-  input?: { label: string; initial?: string; placeholder?: string };
+  input?: { label: string; initial?: string; placeholder?: string; hint?: string; secret?: boolean };
   confirmText?: string;
   danger?: boolean;
   onConfirm: (value: string) => void;
@@ -35,7 +35,8 @@ export function Dialog({ title, message, input, confirmText, danger, inline, onC
 
   const confirm = () => {
     if (input && !value.trim()) return;
-    onConfirm(value.trim());
+    // 密码类的原样交回去：网盘密码首尾带空格的话，砍掉就对不上了
+    onConfirm(input?.secret ? value : value.trim());
     onClose();
   };
 
@@ -55,12 +56,16 @@ export function Dialog({ title, message, input, confirmText, danger, inline, onC
               <input
                 ref={inputRef}
                 autoFocus
+                // 口令别留在输入框的历史里，也别让密码管理器来填
+                type={input.secret ? "password" : "text"}
+                autoComplete={input.secret ? "off" : undefined}
                 value={value}
                 placeholder={input.placeholder}
                 onChange={(e) => setValue(e.target.value)}
                 // 中文输入法选词那一下的 Enter 不算确认（macOS 的 WebView 会把它当普通 Enter 发过来）
                 onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && confirm()}
               />
+              {input.hint && <em className="field-hint">{input.hint}</em>}
             </label>
           )}
         </div>

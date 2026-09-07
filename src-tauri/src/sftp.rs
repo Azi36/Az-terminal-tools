@@ -149,7 +149,7 @@ async fn is_cancelled(state: &SftpState, task_id: &str) -> bool {
 }
 
 /// 取（必要时建立）某条 SSH 连接上的 SFTP 会话
-async fn session_of(
+pub(crate) async fn session_of(
     sftp_state: &SftpState,
     ssh: &SshState,
     session_id: &str,

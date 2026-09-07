@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { IconCheck, IconKey, IconLock, IconServer, IconStar, IconTrash, IconX } from "../components/icons";
+import { IconCheck, IconKey, IconLink, IconLock, IconPlay, IconServer, IconStar, IconTrash, IconX } from "../components/icons";
 import { fmtWhen } from "../format";
 import { stashSecret } from "../secrets";
 import { loadBookmarks, loadConnections, newId } from "../store";
@@ -11,9 +11,11 @@ import {
   DEFAULT_GROUP,
   DEFAULT_USER,
   ENCODINGS,
+  PERSIST_KINDS,
   PROTOCOLS,
   type AuthType,
   type Connection,
+  persistNameOf,
   type Protocol,
 } from "../types";
 
@@ -48,6 +50,8 @@ function sameConfig(a: Connection, b: Connection): boolean {
     a.color === b.color &&
     (a.encoding || DEFAULT_ENCODING) === (b.encoding || DEFAULT_ENCODING) &&
     (a.jumpId ?? "") === (b.jumpId ?? "") &&
+    (a.initCommand ?? "") === (b.initCommand ?? "") &&
+    (a.persist ?? "") === (b.persist ?? "") &&
     !!a.pinned === !!b.pinned
   );
 }
@@ -68,6 +72,8 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
   const [color, setColor] = useState(conn?.color ?? COLORS[0]);
   const [encoding, setEncoding] = useState(conn?.encoding || DEFAULT_ENCODING);
   const [jumpId, setJumpId] = useState(conn?.jumpId ?? "");
+  const [initCommand, setInitCommand] = useState(conn?.initCommand ?? "");
+  const [persist, setPersist] = useState<"" | "tmux" | "screen">(conn?.persist ?? "");
   const [pinned, setPinned] = useState(!!conn?.pinned);
   /** 顺手填的密码 / 密码短语；不填就留到连接时再问 */
   const [secret, setSecret] = useState("");
@@ -107,6 +113,8 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
     color,
     encoding,
     jumpId: jumpId || undefined,
+    initCommand: initCommand.trim() || undefined,
+    persist: persist || undefined,
     tunnels: conn?.tunnels,
     pinned,
     createdAt: conn?.createdAt ?? Date.now(),
@@ -443,6 +451,49 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
             </label>
           </div>
 
+        </section>
+
+        <section className="page-card">
+          <h3><IconLink size={14} />持久会话</h3>
+          <div className="form-grid">
+            <label className="field span2">
+              <span>把 shell 跑在哪儿</span>
+              <select value={persist} onChange={(e) => setPersist(e.target.value as "" | "tmux" | "screen")}>
+                {PERSIST_KINDS.map((one) => (
+                  <option key={one.value} value={one.value}>{one.label}</option>
+                ))}
+              </select>
+              <em className="field-hint">
+                {PERSIST_KINDS.find((one) => one.value === persist)?.hint}
+                {persist && (
+                  <>
+                    {" "}会话名固定是 <code>{persistNameOf(conn?.id ?? "")}</code>，
+                    断线重连接回的就是它。机器上没装的话会说一句然后退回普通 shell。
+                  </>
+                )}
+              </em>
+            </label>
+          </div>
+        </section>
+
+        <section className="page-card">
+          <h3><IconPlay size={14} />登录后执行</h3>
+          <div className="form-grid">
+            <label className="field span2">
+              <span>连上就自动敲这几行</span>
+              <textarea
+                value={initCommand}
+                spellCheck={false}
+                placeholder={"cd /srv/app\nsource .env"}
+                onChange={(e) => setInitCommand(e.target.value)}
+              />
+              <em className="field-hint">
+                一行一条，像自己敲的一样进终端（掉线自动重连之后也会再跑一遍）。
+                <b className="hint-warn">这里是明文存在配置里的，别写密码</b>
+                —— 导出配置会带上它，导入别人的配置前也先看一眼这一栏。
+              </em>
+            </label>
+          </div>
         </section>
 
         {conn ? (

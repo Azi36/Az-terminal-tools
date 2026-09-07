@@ -63,19 +63,26 @@ const stamp = () => {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
 };
 
-/** 导出：选个位置，把上面那堆写成 JSON */
-export async function exportAll(): Promise<string | null> {
+/**
+ * 导出：选个位置，把上面那堆写成 JSON。
+ *
+ * 给了口令就加密（Argon2id + XChaCha20-Poly1305，见 src-tauri/src/vault.rs）。
+ * 里面本来就没有密码，但主机名、用户名、跳板机链路、内网端口本身就是情报 ——
+ * 这份文件要是进了网盘或者聊天记录，等于把内网地图递出去。
+ */
+export async function exportAll(passphrase?: string): Promise<string | null> {
+  const sealed = !!passphrase;
   const path = await save({
-    title: "导出 AzTerm 配置",
-    defaultPath: `az-term-备份-${stamp()}.json`,
+    title: sealed ? "加密导出 AzTerm 配置" : "导出 AzTerm 配置",
+    defaultPath: `az-term-备份-${stamp()}${sealed ? ".enc" : ""}.json`,
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (!path) return null;
-  await invoke("local_write_text", {
-    path,
-    content: JSON.stringify(collect(), null, 2),
-    encoding: "utf-8",
-  });
+  const plain = JSON.stringify(collect(), null, 2);
+  const content = sealed
+    ? await invoke<string>("vault_seal", { plaintext: plain, passphrase })
+    : plain;
+  await invoke("local_write_text", { path, content, encoding: "utf-8" });
   return path;
 }
 
@@ -140,6 +147,16 @@ function cleanConn(raw: Record<string, unknown>): Connection | null {
     group: (typeof raw.group === "string" && raw.group.trim()) || DEFAULT_GROUP,
     color: typeof raw.color === "string" && raw.color ? raw.color : COLORS[0],
     encoding: typeof raw.encoding === "string" && raw.encoding ? raw.encoding : DEFAULT_ENCODING,
+    // 这一栏连上就自动执行，理论上别人的备份文件里能藏东西。还是留着：
+    // 这个文件的正经用途是「自己换台机器搬家」，丢了它自己的备份就还不回来。
+    // 真要防「拿别人的文件」，丢一个 initCommand 也不顶用 —— 上面 jumpId 和
+    // tunnels 本来就没还原，这个格式从来就不保证能完整搬运别人的配置。
+    // 只截断到一屏能看完的长度，配置页上那一栏一眼扫得到，藏不住长脚本。
+    initCommand:
+      typeof raw.initCommand === "string" && raw.initCommand.trim()
+        ? raw.initCommand.trim().slice(0, 1000)
+        : undefined,
+    persist: raw.persist === "tmux" || raw.persist === "screen" ? raw.persist : undefined,
     pinned: !!raw.pinned,
     createdAt: Number(raw.createdAt) || Date.now(),
     lastUsedAt: Number(raw.lastUsedAt) || undefined,
@@ -151,10 +168,12 @@ function cleanConn(raw: Record<string, unknown>): Connection | null {
 }
 
 /**
- * 导入：按 id 覆盖同一条，其余追加。
- * 同一份备份导两次不会变成两套 —— id 是同一个，第二次就是覆盖。
+ * 挑一个备份文件读进来，顺便告诉调用方它是不是加密的。
+ *
+ * 「读文件」和「套用」分成两步，是因为加密的那种中间要停下来问口令 ——
+ * 揉在一个函数里就得在数据层弹窗，那是界面的事。
  */
-export async function importAll(): Promise<ImportResult | null> {
+export async function pickBackup(): Promise<{ path: string; content: string; sealed: boolean } | null> {
   const picked = await open({
     title: "导入 AzTerm 配置",
     multiple: false,
@@ -162,11 +181,23 @@ export async function importAll(): Promise<ImportResult | null> {
   });
   const path = Array.isArray(picked) ? picked[0] : picked;
   if (!path) return null;
-
   const file = await invoke<{ content: string }>("local_read_text", { path, encoding: "utf-8" });
+  const sealed = await invoke<boolean>("vault_is_sealed", { text: file.content });
+  return { path, content: file.content, sealed };
+}
+
+/** 拿口令把加密的那种解开，返回里面的明文 JSON */
+export const unseal = (content: string, passphrase: string) =>
+  invoke<string>("vault_open", { sealed: content, passphrase });
+
+/**
+ * 套用一份（已经是明文的）备份：按 id 覆盖同一条，其余追加。
+ * 同一份备份导两次不会变成两套 —— id 是同一个，第二次就是覆盖。
+ */
+export async function applyBackup(content: string): Promise<ImportResult> {
   let data: unknown;
   try {
-    data = JSON.parse(file.content);
+    data = JSON.parse(content);
   } catch {
     throw new Error("这个文件不是合法的 JSON");
   }
@@ -216,7 +247,9 @@ export async function importAll(): Promise<ImportResult | null> {
     }
   }
   if (backup.settings && typeof backup.settings === "object") {
-    saveSettings({ ...loadSettings(), ...backup.settings });
+    // 全局热键、网盘地址 / 账号 / 上次同步时间是这台机器自己的事，不该被别的机器的备份改掉
+    const { hotkey: _hotkey, syncUrl: _url, syncUser: _user, syncedAt: _at, ...portable } = backup.settings as Partial<AppSettings>;
+    saveSettings({ ...loadSettings(), ...portable });
     result.settings = true;
   }
 
@@ -259,4 +292,99 @@ export function adoptSshConfig(hosts: ConfigHost[]): number {
     });
   });
   return hosts.length;
+}
+
+/** 别的工具的导出文件里认出来的一台机器 */
+export interface Found {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  /** "xshell" / "putty" / "json" */
+  source: string;
+}
+
+const SOURCE_LABEL: Record<string, string> = { xshell: "Xshell", putty: "PuTTY", json: "JSON" };
+export const sourceLabel = (source: string) => SOURCE_LABEL[source] ?? source;
+
+/**
+ * 从别的 SSH 工具的导出文件里捞服务器。
+ *
+ * 只认主机 / 端口 / 用户名三样。**密码一概不认** —— 那几家的密码是用它们自己的
+ * 密钥加密的，解得开也不该解；导进来的连接第一次连的时候自己输一次。
+ */
+export async function scanForeign(): Promise<Found[] | null> {
+  const picked = await open({
+    title: "选别的工具导出的文件",
+    multiple: true,
+    filters: [
+      { name: "会话文件", extensions: ["xsh", "reg", "json"] },
+      { name: "所有文件", extensions: ["*"] },
+    ],
+  });
+  const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+  if (paths.length === 0) return null;
+  return invoke<Found[]>("import_scan", { paths });
+}
+
+/** 把认出来的那些变成连接（跟 ssh config 那条路一个规矩：密码留到第一次连再输） */
+export function adoptForeign(rows: Found[]): number {
+  const had = new Set(loadConnections().map((one) => `${one.host}|${one.username}|${one.port}`));
+  let count = 0;
+  rows.forEach((one, i) => {
+    const username = one.username || DEFAULT_USER;
+    // 已经有同样一台就跳过，导两次不该变成两条；同一批文件里重复的也只收一条
+    const key = `${one.host}|${username}|${one.port}`;
+    if (had.has(key)) return;
+    had.add(key);
+    saveConnection({
+      id: newId(),
+      name: one.name || one.host,
+      protocol: "ssh",
+      host: one.host,
+      port: one.port,
+      username,
+      authType: "password",
+      group: "导入",
+      color: COLORS[i % COLORS.length],
+      encoding: DEFAULT_ENCODING,
+      createdAt: Date.now() + i,
+    });
+    count += 1;
+  });
+  return count;
+}
+
+// ─────────────────────────── WebDAV 同步 ───────────────────────────
+
+/**
+ * 上传：先用口令封起来再传。
+ *
+ * **传上去的永远是密文**，这一条不给开关。备份里虽然没有密码，但主机名、用户名、
+ * 跳板机链路、内网端口就是一张内网地图，放在别人的服务器上必须是加密的。
+ */
+export async function syncPush(url: string, username: string, passphrase: string): Promise<void> {
+  const sealed = await invoke<string>("vault_seal", {
+    plaintext: JSON.stringify(collect(), null, 2),
+    passphrase,
+  });
+  await invoke("sync_put_saved", { url, username, body: sealed });
+}
+
+/**
+ * 下载并套用。返回 null 表示服务器上还没有这个文件（第一次同步的正常情况）。
+ *
+ * 是覆盖式的：同 id 的覆盖，其余追加 —— 跟本地导入一个规矩。
+ * 不做三方合并，一个人用的工具里，「上次在哪台机器上改的」他自己清楚，
+ * 替他猜反而会把东西弄丢。
+ */
+export async function syncPull(
+  url: string,
+  username: string,
+  passphrase: string,
+): Promise<ImportResult | null> {
+  const got = await invoke<{ content: string | null }>("sync_get_saved", { url, username });
+  if (got.content === null) return null;
+  const plain = await unseal(got.content, passphrase);
+  return applyBackup(plain);
 }

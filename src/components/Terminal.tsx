@@ -6,7 +6,8 @@ import { SearchAddon } from "@xterm/addon-search";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
+import { ContextMenu, menuAt, type MenuEntry, type MenuState } from "./ContextMenu";
+import { matchShortcut } from "../shortcuts";
 import { Dialog } from "./Dialog";
 import { IconSearch, IconX } from "./icons";
 import { copyText, pasteText } from "../clipboard";
@@ -24,18 +25,26 @@ interface TerminalProps {
   divider: boolean;
   /** 有输入或有输出就报一声，空闲计时器靠它判断这条会话还活着 */
   onActivity?: () => void;
+  /**
+   * 用户在这个终端里敲的 / 粘的东西，原样再给上层一份 —— 同步输入靠它转发到别的会话。
+   * 只走用户输入，服务器的回显不走这条路（不然两台机器会互相灌）。
+   */
+  onInput?: (data: string) => void;
+  /** 上层（会话 / 应用）想挂进右键菜单的条目，接在终端自己那几条后面 */
+  extraMenu?: MenuEntry[];
 }
 
 /**
  * 终端视图：xterm.js 画布 ⇄ Rust SSH 会话。
  * - 用户输入 → invoke("ssh_write")
  * - 服务器输出 → 监听 event "ssh://data/{sessionId}" → term.write
- * - Ctrl+Shift+F 在回滚里找字，Ctrl+Shift+C/V 复制粘贴
+ * - Ctrl+Shift+F 在回滚里找字，Ctrl+Shift+C/V 复制粘贴，Ctrl+Shift+A/K 全选 / 清屏
  *
  * 快捷键一律带 Shift：不带 Shift 的 Ctrl 组合在终端里都有正经用途
  * （Ctrl+C 中断、Ctrl+F 在 vim 里翻页），抢了就是给用户添堵。
+ * 应用级的那些（换标签、命令面板……）见 shortcuts.ts，这儿只负责放行。
  */
-export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActivity }: TerminalProps) {
+export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActivity, onInput, extraMenu }: TerminalProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -47,15 +56,103 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
   const [linkAsk, setLinkAsk] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
   const [query, setQuery] = useState("");
+
+  // —— 命令补全建议 ——
+  // 这一段只在**确定自己没跟丢**的时候才给建议：
+  // 行编辑器在 shell 那边，我们只看得见按键；用户一按方向键、Ctrl+U、Tab、
+  // 或者粘贴一段东西，我们就不知道那一行现在是什么了。那种时候宁可不提示，
+  // 也不能提示一条错的 —— 采纳了会把命令拼坏。
+  /** 这条会话里执行过的命令。**只在内存里**，不落盘：命令行里带密码是常事 */
+  const history = useRef<string[]>([]);
+  /** 我们认为当前行已经敲了什么 */
+  const typed = useRef("");
+  /** 还跟得上吗；false = 跟丢了，等下一个回车重新开始 */
+  const tracking = useRef(true);
+  const [hint, setHint] = useState<string | null>(null);
+  /** 供按键处理用的最新值（那个 handler 只挂一次） */
+  const hintRef = useRef<string | null>(null);
+  hintRef.current = hint;
+
+  /** 从历史里找一条以当前输入打头的 */
+  const refreshHint = () => {
+    const now = typed.current;
+    if (!tracking.current || now.trim().length < 3) { setHint(null); return; }
+    // 从新到旧找：最近敲过的那条最可能是想要的
+    const found = history.current.find((one) => one.startsWith(now) && one.length > now.length);
+    setHint(found ?? null);
+  };
+
+  /** 记一次输入，顺便更新建议 */
+  /**
+   * 敲的东西有没有在屏幕上回显。密码提示符（sudo、ssh、mysql -p、passwd）下敲的字符
+   * 服务器不回显，这种行绝不能进历史 —— 不然之后敲出同样的前缀，密码就明文画在建议条里。
+   * 只看开头几个字符：网络慢时最后几个字符的回显可能还没到，看整串会漏记正常命令。
+   */
+  const echoed = (done: string): boolean => {
+    const buf = termRef.current?.buffer.active;
+    if (!buf) return false;
+    const line = buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
+    return line.includes(done.slice(0, Math.min(done.length, 6)));
+  };
+
+  const noteInput = (data: string) => {
+    if (data === "\r" || data === "\n") {
+      const done = typed.current.trim();
+      if (done.length > 2 && echoed(done)) {
+        // 同一条命令只留最近那次，别把历史撑满
+        history.current = [done, ...history.current.filter((one) => one !== done)].slice(0, 200);
+      }
+      typed.current = "";
+      tracking.current = true;
+      setHint(null);
+      return;
+    }
+    if (!tracking.current) return;
+    // 退格
+    if (data === "\x7f" || data === "\b") {
+      typed.current = typed.current.slice(0, -1);
+      refreshHint();
+      return;
+    }
+    // 普通可见字符（一次一个）。多字符一般是粘贴或者转义序列，跟不了
+    if (data.length === 1 && data >= " " && data !== "\x7f") {
+      typed.current += data;
+      refreshHint();
+      return;
+    }
+    // 方向键、Ctrl+U、Tab、粘贴……行内容不再由我们说了算，收手
+    tracking.current = false;
+    typed.current = "";
+    setHint(null);
+  };
+
+  /** 采纳建议：把剩下那截当成用户自己敲的发过去 */
+  const takeHint = () => {
+    const one = hintRef.current;
+    if (!one) return;
+    const rest = one.slice(typed.current.length);
+    if (!rest) return;
+    typed.current = one;
+    setHint(null);
+    activity.current?.();
+    invoke("ssh_write", { sessionId, data: rest }).catch(() => {});
+    echo.current?.(rest);
+  };
+  const takeHintRef = useRef(takeHint);
+  takeHintRef.current = takeHint;
   const activity = useRef(onActivity);
   activity.current = onActivity;
+  // 放 ref 里：下面那个 onData 监听只挂一次，直接闭包捕获的话拿到的永远是第一次的函数
+  const echo = useRef(onInput);
+  echo.current = onInput;
 
   const paste = async () => {
     const text = await pasteText();
     if (!text) return;
     activity.current?.();
     // 经 xterm 走而不是直接 ssh_write：远端开了 bracketed paste（vim / zsh 默认）时
-    // 它会包上 \e[200~ … \e[201~，多行粘贴才不会被逐行执行、在 vim 里缩进错乱
+    // 它会包上 \e[200~ … \e[201~，多行粘贴才不会被逐行执行、在 vim 里缩进错乱。
+    // 发送、同步输入的转发、补全的「跟丢了」都由下面的 onData 统一处理，这儿不用重复
     termRef.current?.paste(text);
   };
 
@@ -81,9 +178,10 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
       { label: "粘贴", hint: "Ctrl+Shift+V", onClick: () => { void paste(); term?.focus(); } },
       null,
       { label: "查找", hint: "Ctrl+Shift+F", onClick: () => setFinding(true) },
+      { label: "全选", hint: "Ctrl+Shift+A", onClick: () => term?.selectAll() },
+      { label: "清屏（只清本地回滚）", hint: "Ctrl+Shift+K", onClick: () => { term?.clear(); term?.focus(); } },
       { label: "插一条分割线", onClick: () => { drawDivider(term); term?.focus(); } },
-      { label: "全选", onClick: () => term?.selectAll() },
-      { label: "清屏", hint: "只清本地回滚", onClick: () => term?.clear() },
+      ...(extraMenu && extraMenu.length > 0 ? [null, ...extraMenu] : []),
     ]));
   };
 
@@ -120,14 +218,19 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     // 终端里 Ctrl+C 是中断、Ctrl+F 是 vim 翻页 / less 前进 / bash 右移光标，
     // 这些都得原样交给服务器。我们自己的功能一律加 Shift，不抢终端的键。
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown" || !e.ctrlKey) return true;
-      const key = e.key.toLowerCase();
-      // 应用级快捷键（App.tsx 在 window 上监听）：Ctrl+Tab 换标签、Ctrl+T 新建、Ctrl+1..9 跳标签。
-      // 不能交给 xterm —— 它会把这些当成 HT / ^T / 控制字符发给服务器，还 stopPropagation，
+      // 有建议时，行尾按 → 采纳它（跟 fish / zsh-autosuggestions 一个手感）。
+      // 只在有建议的时候截，而行尾的 → 在 shell 里本来就是空操作，所以不亏。
+      if (e.type === "keydown" && e.key === "ArrowRight" && !e.ctrlKey && !e.altKey && !e.shiftKey && hintRef.current) {
+        takeHintRef.current();
+        return false;
+      }
+      if (e.type !== "keydown") return true;
+      // 应用级快捷键（App.tsx 在 window 上监听，表在 shortcuts.ts）：不能交给 xterm ——
+      // 它会把 Ctrl+Shift+W 当成 ^W、Alt+1 当成 ESC 1 发给服务器，还 stopPropagation，
       // window 就收不到了。返回 false 只是让 xterm 不处理，事件照常冒泡。
-      // Ctrl+W 故意不拦：bash 里那是删一个词，比关标签常用得多（跟 Windows Terminal 一个规矩）。
-      if (!e.altKey && !e.metaKey && (e.key === "Tab" || (!e.shiftKey && (key === "t" || /^[1-9]$/.test(e.key))))) return false;
-      if (!e.shiftKey) return true;
+      if (matchShortcut(e)) return false;
+      if (!e.ctrlKey || !e.shiftKey) return true;
+      const key = e.key.toLowerCase();
       if (key === "c") {
         const picked = term.getSelection();
         // 没选中东西时别把这个键吞了，让它照常当中断用
@@ -143,6 +246,14 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
         setFinding(true);
         return false;
       }
+      if (key === "a") {
+        term.selectAll();
+        return false;
+      }
+      if (key === "k") {
+        term.clear();
+        return false;
+      }
       return true;
     });
 
@@ -150,6 +261,8 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     const onData = term.onData((data) => {
       activity.current?.();
       invoke("ssh_write", { sessionId, data }).catch(() => {});
+      echo.current?.(data);
+      noteInput(data);
       if (dividerOn.current && data.includes("\r")) drawDivider(term);
     });
 
@@ -249,6 +362,15 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
         </div>
       )}
       <div className="term-host" ref={hostRef} onContextMenu={openMenu} />
+      {hint && (
+        <div className="term-hint" onMouseDown={(e) => { e.preventDefault(); takeHint(); }} title="点一下，或者按 → 采纳">
+          <span className="term-hint-key">→</span>
+          <code>
+            <b>{hint.slice(0, typed.current.length)}</b>{hint.slice(typed.current.length)}
+          </code>
+          <small>这条会话里敲过</small>
+        </div>
+      )}
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {linkAsk && (
         <Dialog

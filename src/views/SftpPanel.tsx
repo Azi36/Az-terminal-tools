@@ -64,6 +64,8 @@ interface SftpPanelProps {
   onActivity?: () => void;
   /** 用内置编辑器打开一个文本文件 */
   onEditFile: (side: Side, path: string) => void;
+  /** 用日志查看器打开一个远程大文件（只读，按需一屏一屏取） */
+  onOpenLog: (path: string) => void;
 }
 
 type SortKey = "name" | "size" | "mtime";
@@ -130,7 +132,7 @@ const errText = (e: unknown) =>
  * 多选（Ctrl / Shift）、目录整体传输、传输排队都在这儿；
  * 传输本身走 Rust 分块流，进度在底部队列条上走。
  */
-export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEditFile }: SftpPanelProps) {
+export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEditFile, onOpenLog }: SftpPanelProps) {
   const [local, setLocal] = useState<FsListing | null>(null);
   const [remote, setRemote] = useState<FsListing | null>(null);
   const [sel, setSel] = useState<Record<Side, string[]>>({ local: [], remote: [] });
@@ -888,7 +890,14 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     const items: MenuEntry[] = [];
 
     if (!many && entry.kind !== "dir") {
-      items.push({ label: "编辑", hint: "内置编辑器", onClick: () => onEditFile(side, entry.path) });
+      // 编辑器 2MB 就拦下了，而 /var/log 底下动辄几百 MB —— 大文件把日志查看器摆前面，
+      // 省得用户先点「编辑」撞一次「文件太大」再回来找别的路
+      const huge = entry.size > 2 * 1024 * 1024;
+      const edit: MenuEntry = { label: "编辑", hint: "内置编辑器", onClick: () => onEditFile(side, entry.path) };
+      const log: MenuEntry = { label: "日志查看器", hint: "只读，多大都开得动", onClick: () => onOpenLog(entry.path) };
+      if (side === "remote" && huge) items.push(log, edit);
+      else if (side === "remote") items.push(edit, log);
+      else items.push(edit);
     }
     if (!many && entry.kind === "dir") {
       items.push({ label: "打开", onClick: () => (side === "local" ? goLocal(entry.path) : goRemote(entry.path)) });

@@ -1,9 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { fmtWhen } from "../format";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { adoptSshConfig, exportAll, importAll, scanSshConfig, type ConfigHost } from "../backup";
+import {
+  adoptForeign, adoptSshConfig, applyBackup, exportAll, pickBackup, scanForeign, scanSshConfig, sourceLabel,
+  syncPull, syncPush, unseal, type ConfigHost, type Found,
+} from "../backup";
 import type { Release } from "../update";
+import { SHORTCUT_GROUPS } from "../shortcuts";
 import {
   IconDownload,
   IconLock,
@@ -12,9 +18,10 @@ import {
   IconServer,
   IconSun,
   IconTerminal,
-  IconX,
-} from "../components/icons";
+  IconX, IconCommand } from "../components/icons";
 import { FONT_SIZES, TERM_SCHEMES } from "../termThemes";
+import { HOTKEYS } from "../hotkey";
+import { Dialog, type DialogSpec } from "../components/Dialog";
 import type { ThemeMode } from "../theme";
 
 interface SettingsProps {
@@ -47,6 +54,14 @@ interface SettingsProps {
   onRestoreChange: (on: boolean) => void;
   updateNotice: boolean;
   onUpdateNoticeChange: (on: boolean) => void;
+  hotkey: string;
+  onHotkeyChange: (accelerator: string) => void;
+  syncUrl: string;
+  syncUser: string;
+  syncedAt: number;
+  onSyncChange: (next: { syncUrl?: string; syncUser?: string; syncedAt?: number }) => void;
+  /** 上一次注册热键失败的原因；没失败就是 null */
+  hotkeyErr: string | null;
   /** 后端提示的新版本；没有就是 null */
   fresh: Release | null;
   /** 此刻连着的会话数：装完更新要重启，得先把这句说清楚 */
@@ -104,6 +119,13 @@ export function Settings({
   onRestoreChange,
   updateNotice,
   onUpdateNoticeChange,
+  hotkey,
+  onHotkeyChange,
+  hotkeyErr,
+  syncUrl,
+  syncUser,
+  syncedAt,
+  onSyncChange,
   fresh,
   liveSessions,
   onDataChanged,
@@ -114,6 +136,10 @@ export function Settings({
   const [note, setNote] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [found, setFound] = useState<{ hosts: ConfigHost[]; already: number } | null>(null);
+  /** 要口令的那两下（加密导出 / 解开导入）共用这一个弹窗 */
+  const [ask, setAsk] = useState<DialogSpec | null>(null);
+  /** 从别的工具的文件里认出来的那些，等用户过一眼再决定导不导 */
+  const [foreign, setForeign] = useState<Found[] | null>(null);
 
   const run = async (job: () => Promise<string | null>) => {
     setBusy(true);
@@ -134,9 +160,22 @@ export function Settings({
     return path ? `导出好了：${path}` : null;
   });
 
-  const doImport = () => run(async () => {
-    const result = await importAll();
-    if (!result) return null;
+  const doExportSealed = () => {
+    setAsk({
+      title: "给这份备份设个口令",
+      message: "导出的文件会用这个口令加密。忘了就真的打不开了 —— 这里没有找回，也没有后门。",
+      input: { label: "口令（至少 8 个字符）", placeholder: "一句只有你想得起来的话", secret: true },
+      confirmText: "加密导出",
+      onConfirm: (passphrase) => run(async () => {
+        const path = await exportAll(passphrase);
+        return path ? `加密导出好了：${path}` : null;
+      }),
+    });
+  };
+
+  /** 套用一份已经是明文的备份，并把结果说成人话 */
+  const absorb = async (content: string) => {
+    const result = await applyBackup(content);
     onDataChanged();
     const parts = [
       result.connections && `${result.connections} 条连接`,
@@ -145,6 +184,21 @@ export function Settings({
       result.bookmarks && `${result.bookmarks} 个收藏`,
     ].filter(Boolean);
     return parts.length ? `导入了 ${parts.join(" · ")}` : "文件里没有可导入的内容";
+  };
+
+  const doImport = () => run(async () => {
+    const picked = await pickBackup();
+    if (!picked) return null;
+    // 明文的直接进；加密的先停下来问口令，问完再走同一条路
+    if (!picked.sealed) return absorb(picked.content);
+    setAsk({
+      title: "这份备份是加密的",
+      message: "输入导出时设的那个口令。",
+      input: { label: "口令", secret: true },
+      confirmText: "解开并导入",
+      onConfirm: (passphrase) => run(async () => absorb(await unseal(picked.content, passphrase))),
+    });
+    return null;
   });
 
   const doScan = () => run(async () => {
@@ -188,6 +242,87 @@ export function Settings({
         tone: "bad",
       });
     }
+  };
+
+  // —— WebDAV 同步 ——
+  const [hasSyncPw, setHasSyncPw] = useState(false);
+  useEffect(() => { invoke<boolean>("sync_has_password").then(setHasSyncPw).catch(() => {}); }, []);
+
+  /** 上传和下载都要那个加密口令，所以两下都先弹同一个框问一次 */
+  const withPassphrase = (title: string, message: string, confirmText: string, job: (pw: string) => Promise<string | null>) => {
+    setAsk({
+      title,
+      message,
+      input: { label: "加密口令", secret: true, hint: "跟加密导出用的是同一套。忘了没有找回。" },
+      confirmText,
+      onConfirm: (passphrase) => run(() => job(passphrase)),
+    });
+  };
+
+  const doPush = () => withPassphrase(
+    "上传到网盘",
+    "本机这份配置会加密后传上去，覆盖服务器上那份。",
+    "上传",
+    async (passphrase) => {
+      await syncPush(syncUrl.trim(), syncUser.trim(), passphrase);
+      onSyncChange({ syncedAt: Date.now() });
+      return "传上去了。";
+    },
+  );
+
+  const doPull = () => withPassphrase(
+    "从网盘拉下来",
+    "服务器上那份会盖到本机：同一条连接按 id 覆盖，其余追加。本机独有的不会被删掉。",
+    "拉下来",
+    async (passphrase) => {
+      const result = await syncPull(syncUrl.trim(), syncUser.trim(), passphrase);
+      if (result === null) return "服务器上还没有这个文件 —— 先在一台机器上传一次。";
+      // 先把拉下来的读进内存，再记同步时间：反过来会拿旧设置把刚导入的盖掉
+      onDataChanged();
+      onSyncChange({ syncedAt: Date.now() });
+      const parts = [
+        result.connections && `${result.connections} 条连接`,
+        result.snippets && `${result.snippets} 条指令`,
+        result.notes && `${result.notes} 条备忘`,
+        result.bookmarks && `${result.bookmarks} 个收藏`,
+      ].filter(Boolean);
+      return parts.length ? `拉下来了：${parts.join(" · ")}` : "服务器上那份是空的";
+    },
+  );
+
+  const doSavePw = () => {
+    setAsk({
+      title: "存网盘密码",
+      message: "存进系统钥匙串（Windows 凭据管理器 / macOS 钥匙串），不落配置文件。",
+      input: { label: "WebDAV 密码", secret: true, hint: "坚果云这类网盘要填「应用密码」，不是登录密码。" },
+      confirmText: "存起来",
+      onConfirm: (password) => run(async () => {
+        await invoke("sync_save_password", { password });
+        setHasSyncPw(true);
+        return "存好了。";
+      }),
+    });
+  };
+
+  const syncReady = syncUrl.trim() !== "" && hasSyncPw;
+
+  const doForeign = () => run(async () => {
+    const rows = await scanForeign();
+    if (rows === null) return null;
+    setForeign(rows);
+    return rows.length === 0 ? "这些文件里没认出服务器 —— 换个导出格式试试，或者用 ~/.ssh/config 那条路" : null;
+  });
+
+  const takeForeign = (rows: Found[]) => {
+    const count = adoptForeign(rows);
+    setForeign(null);
+    onDataChanged();
+    setNote({
+      tone: "ok",
+      text: count > 0
+        ? `导入了 ${count} 台，在侧栏「导入」分组里。密码第一次连的时候再输。`
+        : "这些机器库里都已经有了，没重复添加。",
+    });
   };
 
   const adopt = (hosts: ConfigHost[]) => {
@@ -333,9 +468,21 @@ export function Settings({
                   连接、指令、备忘、收藏、偏好设置导成一个 JSON 文件，换机器搬过去就行。
                   <b>密码不在里面</b> —— 它们在系统钥匙串里，导成明文就把「不落明文」这件事作废了；
                   到新机器第一次连的时候再输一次。
+                  <br />
+                  文件要经网盘、聊天工具或者邮件走一趟的话用<b>加密导出</b>：里面虽然没有密码，
+                  但主机名、用户名、跳板机链路、内网端口本身就是情报。口令忘了没有找回。
                 </p>
                 <div className="data-acts">
                   <button className="btn-ghost sm" type="button" disabled={busy} onClick={doExport}>导出</button>
+                  <button
+                    className="btn-ghost sm"
+                    type="button"
+                    disabled={busy}
+                    onClick={doExportSealed}
+                    title="用口令加密：里面没有密码，但主机名和内网拓扑本身就是情报"
+                  >
+                    加密导出
+                  </button>
                   <button className="btn-ghost sm" type="button" disabled={busy} onClick={doImport}>导入</button>
                 </div>
               </div>
@@ -375,6 +522,92 @@ export function Settings({
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="card-group">
+              <h4>从别的工具导入</h4>
+              <div className="row-between">
+                <p className="page-meta">
+                  认 Xshell 的 <code>.xsh</code>、PuTTY 导出的 <code>.reg</code>，
+                  以及 Termius 这类工具导出的 JSON。可以一次选多个文件。
+                  <br />
+                  只取<b>主机、端口、用户名</b>三样。<b>密码不认</b> —— 那几家的密码是用它们自己的
+                  密钥加密的，解得开也不该解。导进来第一次连的时候自己输一次。
+                </p>
+                <div className="data-acts">
+                  <button className="btn-ghost sm" type="button" disabled={busy} onClick={doForeign}>选文件</button>
+                </div>
+              </div>
+
+              {foreign && foreign.length > 0 && (
+                <div className="cfg-found">
+                  <div className="cfg-head">认出 {foreign.length} 台</div>
+                  <div className="cfg-list">
+                    {foreign.map((one) => (
+                      <div className="cfg-row" key={`${one.host}-${one.port}-${one.username}`}>
+                        <b>{one.name}</b>
+                        <span>{one.username || "root"}@{one.host}{one.port === 22 ? "" : `:${one.port}`}</span>
+                        <small>{sourceLabel(one.source)}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="cfg-acts">
+                    <button className="btn-ghost sm" type="button" onClick={() => setForeign(null)}>算了</button>
+                    <button className="btn-primary sm" type="button" onClick={() => takeForeign(foreign)}>全部导入</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="card-group">
+              <h4>网盘同步<em className={syncReady ? "on" : "off"}>{syncReady ? "配好了" : "没配"}</em></h4>
+              <p className="page-meta">
+                把加密后的备份放到自己的 WebDAV 网盘上，换台机器拉回来。
+                <b>只有你点的时候才发生</b> —— 没有自动同步、没有后台轮询。
+                <br />
+                传上去的<b>永远是密文</b>，这一条不给开关：备份里虽然没有密码，
+                但主机名、用户名、跳板机链路、内网端口就是一张内网地图。
+              </p>
+              <div className="form-grid">
+                <label className="field span2">
+                  <span>文件地址</span>
+                  <input
+                    value={syncUrl}
+                    spellCheck={false}
+                    placeholder="https://dav.jianguoyun.com/dav/我的坚果云/az-term.json"
+                    onChange={(e) => onSyncChange({ syncUrl: e.target.value })}
+                  />
+                  <em className="field-hint">要指到一个<b>文件</b>，不是目录。上级目录得先在网盘里建好。</em>
+                </label>
+                <label className="field">
+                  <span>用户名</span>
+                  <input
+                    value={syncUser}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="邮箱或账号"
+                    onChange={(e) => onSyncChange({ syncUser: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span>密码</span>
+                  <div className="field-row">
+                    <button className="btn-ghost sm" type="button" disabled={busy} onClick={doSavePw}>
+                      {hasSyncPw ? "换一个" : "填一个"}
+                    </button>
+                    {hasSyncPw && <em className="field-hint">已存进钥匙串</em>}
+                  </div>
+                </label>
+              </div>
+              <div className="row-between">
+                <p className="page-meta">
+                  {syncedAt > 0 ? `上次同步：${fmtWhen(syncedAt)}` : "还没同步过"}
+                </p>
+                <div className="data-acts">
+                  <button className="btn-ghost sm" type="button" disabled={busy || !syncReady} onClick={doPush}>上传</button>
+                  <button className="btn-ghost sm" type="button" disabled={busy || !syncReady} onClick={doPull}>拉下来</button>
+                </div>
+              </div>
             </div>
 
             {note && (
@@ -490,6 +723,27 @@ export function Settings({
           </section>
 
           <section className="page-card">
+            <h3><IconCommand size={14} />快捷键</h3>
+            <p className="page-meta">
+              应用级的一律带 Shift 或 Alt：不带 Shift 的 Ctrl 组合在 shell 里都有正经用途（Ctrl+W 删词、Ctrl+P 上一条历史），
+              终端有焦点时不抢。终端里右键也能看到这些。
+            </p>
+            <div className="keys-groups">
+              {SHORTCUT_GROUPS.map((group) => (
+                <div className="keys-group" key={group.title}>
+                  <h4>{group.title}</h4>
+                  {group.items.map((item) => (
+                    <div className="keys-row" key={item.keys}>
+                      <span>{item.what}</span>
+                      <kbd>{item.keys}</kbd>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="page-card">
             <h3><IconLock size={14} />关于<em className="on">v{version}</em></h3>
             <div className="row-between">
               <div className="label">
@@ -538,6 +792,27 @@ export function Settings({
             )}
 
             <div className="card-group">
+              <h4>全局热键<em className={hotkey ? "on" : "off"}>{hotkey ? "开着" : "关着"}</em></h4>
+              <div className="row-between">
+                <p className="page-meta">
+                  不在前台也能一下把窗口叫出来，再按一下收回去 —— 想敲一条命令的时候不用先去找它。
+                  这个键是<b>全系统</b>抢的，选一个别的软件用不到的。
+                </p>
+                <select
+                  className="enc-pick"
+                  value={hotkey}
+                  aria-label="全局热键"
+                  onChange={(e) => onHotkeyChange(e.target.value)}
+                >
+                  {HOTKEYS.map((one) => (
+                    <option key={one.value} value={one.value}>{one.label}</option>
+                  ))}
+                </select>
+              </div>
+              {hotkeyErr && <p className="data-note bad">{hotkeyErr}</p>}
+            </div>
+
+            <div className="card-group">
               <h4>新版提示<em className={updateNotice ? "on" : "off"}>{updateNotice ? "开着" : "关着"}</em></h4>
               <div className="row-between">
                 <p className="page-meta">
@@ -560,6 +835,8 @@ export function Settings({
           </section>
         </div>
       </div>
+
+      {ask && <Dialog {...ask} onClose={() => setAsk(null)} />}
     </div>
   );
 }

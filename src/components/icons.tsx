@@ -286,3 +286,40 @@ export const IconFolderPlus = ({ size }: P) => (
     <path d="M12 11v5M9.5 13.5h5" />
   </svg>
 );
+
+export const IconGauge = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M12 14l4-4" />
+    <path d="M3.5 18a9 9 0 1 1 17 0" />
+  </svg>
+);
+
+export const IconPulse = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 12h4l3 8 4-16 3 8h4" />
+  </svg>
+);
+
+export const IconPie = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M21 12A9 9 0 1 1 12 3v9z" />
+  </svg>
+);
+
+export const IconPlug = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M9 2v6" />
+    <path d="M15 2v6" />
+    <path d="M6 8h12v3a6 6 0 0 1-12 0z" />
+    <path d="M12 17v5" />
+  </svg>
+);
+
+export const IconFileText = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <path d="M14 2v6h6" />
+    <path d="M8 13h8" />
+    <path d="M8 17h5" />
+  </svg>
+);

@@ -54,3 +54,20 @@ export function fmtMode(mode?: number | null): string {
   const part = (value: number) => `${bit(value, 4, "r")}${bit(value, 2, "w")}${bit(value, 1, "x")}`;
   return `${part((mode >> 6) & 7)}${part((mode >> 3) & 7)}${part(mode & 7)}`;
 }
+
+/** 开机多久了：到「天」就够，秒数没人关心 */
+export function fmtUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 60) return "刚开机";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`;
+  if (hours > 0) return mins > 0 ? `${hours} 小时 ${mins} 分` : `${hours} 小时`;
+  return `${mins} 分`;
+}
+
+/** 每秒多少字节 */
+export function fmtRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond < 1) return "0 B/s";
+  return `${fmtSize(bytesPerSecond)}/s`;
+}

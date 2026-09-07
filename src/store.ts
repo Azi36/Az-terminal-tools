@@ -124,11 +124,23 @@ export interface AppSettings {
   restoreTabs: boolean;
   /** 开起来之后顺手问一句「有没有新版」（只发一个 GET，不带身份不上报） */
   updateNotice: boolean;
+  /** 全局热键：不在前台也能把窗口叫出来。空字符串 = 不用 */
+  hotkey: string;
+  /** WebDAV 同步：文件的完整地址；空 = 没配 */
+  syncUrl: string;
+  /** WebDAV 用户名（密码在钥匙串里） */
+  syncUser: string;
+  /** 上次上传 / 下载的时间戳；0 = 还没同步过 */
+  syncedAt: number;
 }
 
 const SETTINGS_KEY = "az-term-settings";
 const DEFAULT_SETTINGS: AppSettings = {
   idleMinutes: 0,
+  hotkey: "",
+  syncUrl: "",
+  syncUser: "",
+  syncedAt: 0,
   foldServers: false,
   foldDb: true,
   termScheme: "az",
@@ -153,8 +165,13 @@ function cleanSettings(raw: unknown): AppSettings {
     typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? Math.round(v) : d;
   const oneOf = <T extends string>(v: unknown, list: readonly T[], d: T): T => (list.includes(v as T) ? (v as T) : d);
   const D = DEFAULT_SETTINGS;
+  const str = (v: unknown, d: string) => (typeof v === "string" ? v : d);
   return {
     idleMinutes: int(s.idleMinutes, D.idleMinutes, 0, 24 * 60),
+    hotkey: str(s.hotkey, D.hotkey),
+    syncUrl: str(s.syncUrl, D.syncUrl),
+    syncUser: str(s.syncUser, D.syncUser),
+    syncedAt: int(s.syncedAt, D.syncedAt, 0, Number.MAX_SAFE_INTEGER),
     foldServers: bool(s.foldServers, D.foldServers),
     foldDb: bool(s.foldDb, D.foldDb),
     termScheme: typeof s.termScheme === "string" && s.termScheme ? s.termScheme : D.termScheme,

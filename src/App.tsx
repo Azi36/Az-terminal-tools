@@ -17,12 +17,14 @@ import { ConnectionList, type ConnStatus } from "./components/ConnectionList";
 import { SnippetPanel } from "./components/SnippetPanel";
 import { NotePanel } from "./components/NotePanel";
 import { TabBar, type TabItem } from "./components/TabBar";
+import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Dialog, type DialogSpec } from "./components/Dialog";
 import { Settings } from "./views/Settings";
 import { ConnectionPage } from "./views/ConnectionPage";
 import { SessionView } from "./views/SessionView";
 import { NoteView } from "./views/NoteView";
 import { FileEditor } from "./views/FileEditor";
+import { LogView } from "./views/LogView";
 import { applyMode, initMode, resolveMode, setMode as persistMode, watchSystem, type ThemeMode } from "./theme";
 import {
   deleteConnection,
@@ -43,6 +45,9 @@ import {
   type AppSettings,
   type SavedTab,
 } from "./store";
+import { applyHotkey } from "./hotkey";
+import { matchShortcut, PAGE_SHORTCUTS, SHORTCUTS } from "./shortcuts";
+import type { MenuEntry } from "./components/ContextMenu";
 import { dropSecret } from "./secrets";
 import { checkRelease, type Release } from "./update";
 import type { Connection, Note, SessionMode, Snippet, Tab, Wake } from "./types";
@@ -57,6 +62,33 @@ type Drawer = "conns" | "snippets" | "notes";
  */
 function App() {
   const [mode, setModeState] = useState<ThemeMode>("dark");
+  /** 命令面板开着没有（Ctrl+Shift+P） */
+  const [palette, setPalette] = useState(false);
+  /**
+   * 同步输入组：哪些会话标签在里面。
+   *
+   * **故意不落盘**。往十台生产机同时敲命令这件事，重开一次应用就该重新决定一遍，
+   * 不该因为上次开着、这次开机就默默还开着。
+   */
+  const [syncTabs, setSyncTabs] = useState<Record<string, true>>({});
+  /**
+   * 分屏：另一半摆哪个标签。null = 没分屏。
+   *
+   * 拆的是工作区不是终端 —— 一个标签里再切一个同一条会话的终端没有意义，
+   * 人要的是「左边跑着日志，右边敲命令」，那是两个标签的事。
+   */
+  const [splitTab, setSplitTab] = useState<string | null>(null);
+  /**
+   * 分屏时有焦点的那块摆在前面（左 / 上）还是后面。
+   * 焦点和位置得拆开：点右半那块拿焦点时，它不该跳到左边去 ——
+   * 鼠标底下的东西换了，终端场景基本没法用。
+   */
+  const [mainFirst, setMainFirst] = useState(true);
+  const [splitDir, setSplitDir] = useState<"row" | "col">("row");
+  /** 左边（上边）那块占多少，0.2 ~ 0.8 */
+  const [splitRatio, setSplitRatio] = useState(0.5);
+  /** 全局热键上次注册失败的原因 —— 组合被别的软件占了是最常见的一种 */
+  const [hotkeyErr, setHotkeyErr] = useState<string | null>(null);
   const [engineStatus, setEngineStatus] = useState<string>("检测中……");
   const [drawer, setDrawer] = useState<Drawer>("conns");
 
@@ -81,6 +113,10 @@ function App() {
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     idleMinutes: 0,
+    hotkey: "",
+    syncUrl: "",
+    syncUser: "",
+    syncedAt: 0,
     foldServers: false,
     foldDb: true,
     termScheme: "az",
@@ -149,6 +185,14 @@ function App() {
   // 开起来之后过一会儿，顺手问一句有没有新版。
   // 「过一会儿」是故意的：启动那几秒该留给用户连服务器，不跟他抢网络。
   // 拿不到就当没有，界面上什么都不会出现。
+  // 全局热键跟着设置走：换一个就先摘掉旧的再挂新的。
+  // 注册失败（组合被别的软件占了）不能装作成功，得把话说回去。
+  useEffect(() => {
+    let dead = false;
+    applyHotkey(settings.hotkey).then((why) => { if (!dead) setHotkeyErr(why); });
+    return () => { dead = true; };
+  }, [settings.hotkey]);
+
   useEffect(() => {
     if (!settings.updateNotice) { setFresh(null); return; }
     // 关掉提示后已经发出去的那次请求回来了也别再弹
@@ -210,42 +254,57 @@ function App() {
     return () => document.removeEventListener("contextmenu", block);
   }, []);
 
-  // —— 标签快捷键 ——
-  // 全部带 Ctrl，且都是终端里没有的组合（Tab / 数字 / W / T），不跟 shell 抢键。
+  // —— 应用级快捷键 ——
+  // 键位表在 shortcuts.ts：一律带 Shift 或 Alt，不跟 shell 里的 Ctrl 组合抢
+  // （Ctrl+W 是删词、Ctrl+P 是上一条历史）。Terminal.tsx 按同一张表放行，事件才到得了这儿。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
+      const hit = matchShortcut(e);
+      if (!hit) return;
       const list = tabsRef.current;
-
-      // Ctrl+Tab / Ctrl+Shift+Tab：在标签之间轮着走
-      if (e.key === "Tab" && list.length > 1) {
-        e.preventDefault();
-        const at = list.findIndex((tab) => tab.id === activeTab);
-        const step = e.shiftKey ? -1 : 1;
-        const next = (at + step + list.length) % list.length;
-        setActiveTab(list[next].id);
-        return;
-      }
-      // Ctrl+W：关当前标签（没保存的照样会问一句）
-      if (e.key.toLowerCase() === "w" && !e.shiftKey && activeTab) {
-        e.preventDefault();
-        closeTab(activeTab);
-        return;
-      }
-      // Ctrl+T：新建连接
-      if (e.key.toLowerCase() === "t" && !e.shiftKey) {
-        e.preventDefault();
-        openNewConn();
-        return;
-      }
-      // Ctrl+1..9：跳到第几个标签，9 是最后一个（跟浏览器一个规矩）
-      if (/^[1-9]$/.test(e.key) && !e.shiftKey) {
-        const nth = Number(e.key);
-        const target = nth === 9 ? list[list.length - 1] : list[nth - 1];
-        if (target) {
+      const here = list.find((tab) => tab.id === activeTab);
+      switch (hit.action) {
+        case "palette":
           e.preventDefault();
-          setActiveTab(target.id);
+          setPalette((on) => !on);
+          return;
+        case "nextTab":
+        case "prevTab": {
+          if (list.length < 2) return;
+          e.preventDefault();
+          const at = list.findIndex((tab) => tab.id === activeTab);
+          const step = hit.action === "prevTab" ? -1 : 1;
+          focusTab(list[(at + step + list.length) % list.length].id);
+          return;
         }
+        case "nthTab": {
+          // 9 是最后一个，跟浏览器一个规矩
+          const target = hit.nth === 9 ? list[list.length - 1] : list[hit.nth - 1];
+          if (!target) return;
+          e.preventDefault();
+          focusTab(target.id);
+          return;
+        }
+        case "closeTab":
+          // 没保存的照样会问一句
+          if (!activeTab) return;
+          e.preventDefault();
+          closeTab(activeTab);
+          return;
+        case "newConn":
+          e.preventDefault();
+          openNewConn();
+          return;
+        case "settings":
+          e.preventDefault();
+          openSettings();
+          return;
+        case "page":
+          // 只在会话标签里有意义；别的标签上按了就当没按
+          if (here?.kind !== "session") return;
+          e.preventDefault();
+          wake(here.id, hit.page, false);
+          return;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -270,7 +329,9 @@ function App() {
   /** 终端最终用哪版色板 */
   const termVariant = settings.termVariant === "auto" ? uiVariant : settings.termVariant;
 
-  const changeSettings = (patch: Partial<AppSettings>) => setSettings(saveSettings({ ...settings, ...patch }));
+  // 以落盘的那份为底而不是内存里的 settings：网盘拉下来、导入备份都是直接写 localStorage 的，
+  // 紧接着的一次 changeSettings（比如记 syncedAt）拿闭包里的旧值展开，会把刚导入的偏好整份盖回去
+  const changeSettings = (patch: Partial<AppSettings>) => setSettings(saveSettings({ ...loadSettings(), ...patch }));
 
   // —— 标签页 ——
   const openTab = (tab: Tab) => {
@@ -278,7 +339,58 @@ function App() {
     setActiveTab(tab.id);
   };
 
-  const focusTab = (tabId: string) => setActiveTab(tabId);
+  const focusTab = (tabId: string) => {
+    // 点的正是分屏那一半：焦点过去、两块的位置不动（所以前后顺序标记要翻一下）
+    if (tabId === splitRef.current) {
+      setSplitTab(activeTab);
+      splitRef.current = activeTab;
+      setMainFirst((first) => !first);
+    }
+    setActiveTab(tabId);
+  };
+
+  // 兜底：不管哪条路把当前标签设成了分屏那一半（关标签的回退、恢复标签……），
+  // 一个标签不能同时占两块，这时分屏就散
+  useEffect(() => {
+    if (activeTab && activeTab === splitTab) {
+      splitRef.current = null;
+      setSplitTab(null);
+      setMainFirst(true);
+    }
+  }, [activeTab, splitTab]);
+
+  /** 把某个标签摆到分屏的另一半 */
+  const putInSplit = (tabId: string) => {
+    if (tabId === activeTab) return;
+    setSplitTab(tabId);
+    splitRef.current = tabId;
+    setMainFirst(true);
+  };
+
+  const endSplit = () => { setSplitTab(null); splitRef.current = null; setMainFirst(true); };
+
+  /** 拖那条分隔线 */
+  const dragSplit = (e: React.MouseEvent) => {
+    const stack = (e.currentTarget as HTMLElement).parentElement;
+    if (!stack) return;
+    e.preventDefault();
+    const box = stack.getBoundingClientRect();
+    const move = (ev: MouseEvent) => {
+      const raw = splitDir === "row"
+        ? (ev.clientX - box.left) / box.width
+        : (ev.clientY - box.top) / box.height;
+      // 卡在 20%~80%：再窄下去那一半就只剩边框了，还不如不分
+      setSplitRatio(Math.min(0.8, Math.max(0.2, raw)));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("dragging-split");
+    };
+    document.body.classList.add("dragging-split");
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   // 「关闭其他」这类操作会在同一个事件里连着关好几个标签。
   // 每次都从渲染时那份快照算「剩下哪些」的话，后一次会把前一次的结果盖掉，
@@ -291,11 +403,41 @@ function App() {
   const dirtyRef = useRef(dirtyTabs);
   dirtyRef.current = dirtyTabs;
 
+  const syncRef = useRef(syncTabs);
+  syncRef.current = syncTabs;
+  const splitRef = useRef(splitTab);
+  splitRef.current = splitTab;
+
+  /** 同步组里此刻真连着的标签 */
+  const syncLive = useMemo(
+    () => Object.keys(syncTabs).filter((id) => sessions[id]),
+    [syncTabs, sessions],
+  );
+
+  const toggleSync = useCallback((tabId: string) => {
+    setSyncTabs((old) => {
+      const next = { ...old };
+      if (next[tabId]) delete next[tabId];
+      else next[tabId] = true;
+      return next;
+    });
+  }, []);
+
+  /** 一台里敲的东西，发给同步组里其它连着的会话 */
+  const broadcast = useCallback((fromTabId: string, data: string) => {
+    if (!syncRef.current[fromTabId]) return;
+    for (const [tabId, on] of Object.entries(syncRef.current)) {
+      if (!on || tabId === fromTabId) continue;
+      const sid = sessionsRef.current[tabId];
+      if (sid) invoke("ssh_write", { sessionId: sid, data }).catch(() => {});
+    }
+  }, []);
+
   /** 这个标签关掉会连带关掉哪些（会话标签带走它下面的编辑器） */
   const doomedBy = (ids: string[]) => {
     const all = new Set(ids);
     for (const tab of tabsRef.current) {
-      if (tab.kind === "file" && ids.includes(tab.sourceTabId)) all.add(tab.id);
+      if ((tab.kind === "file" || tab.kind === "log") && ids.includes(tab.sourceTabId)) all.add(tab.id);
     }
     return [...all];
   };
@@ -313,6 +455,19 @@ function App() {
     const rest = list.filter((tab) => !gone.has(tab.id));
 
     tabsRef.current = rest;
+    // 分屏的那一半被关掉了就退回单屏，别留一个指向不存在标签的分屏
+    if (splitRef.current && gone.has(splitRef.current)) {
+      splitRef.current = null;
+      setSplitTab(null);
+    }
+    // 关掉的标签要退出同步组：留着的话，下次某个新标签复用了同一个 id
+    // （或者只剩一台还在组里）会让「同步 N 台」那个数字对不上实际
+    if (Object.keys(syncRef.current).some((one) => gone.has(one))) {
+      const nextSync = { ...syncRef.current };
+      for (const dead of gone) delete nextSync[dead];
+      syncRef.current = nextSync;
+      setSyncTabs(nextSync);
+    }
     const nextSessions = { ...sessionsRef.current };
     const nextDirty = { ...dirtyRef.current };
     for (const dead of gone) {
@@ -374,8 +529,17 @@ function App() {
 
   const handleSession = useCallback((tabId: string, sessionId: string | null) => {
     setSessions((map) => ({ ...map, [tabId]: sessionId }));
+    if (!sessionId) {
+      // 断了就退出同步组：重连之后要不要继续广播，得重新决定一遍
+      setSyncTabs((map) => {
+        if (!map[tabId]) return map;
+        const next = { ...map };
+        delete next[tabId];
+        return next;
+      });
+      return;
+    }
     // 连上了就记一笔，侧栏按最近使用排序
-    if (!sessionId) return;
     setTabs((list) => {
       const tab = list.find((one) => one.id === tabId);
       if (tab?.kind === "session") {
@@ -396,6 +560,14 @@ function App() {
     if (list.some((tab) => sessions[tab.id])) return "live";
     return list.length > 0 ? "down" : "idle";
   }, [tabs, sessions]);
+
+  /** 终端右键菜单里应用级的那几条：跟快捷键一一对应，菜单上写着键位，不用背 */
+  const appMenuFor = (tabId: string): MenuEntry[] => [
+    { label: "命令面板", hint: SHORTCUTS.palette, onClick: () => setPalette(true) },
+    { label: "新建连接", hint: SHORTCUTS.newConn, onClick: openNewConn },
+    { label: "关掉这个标签", hint: SHORTCUTS.closeTab, onClick: () => closeTab(tabId) },
+    { label: "设置", hint: SHORTCUTS.settings, onClick: openSettings },
+  ];
 
   const wake = (tabId: string, mode: SessionMode, connect: boolean) => {
     focusTab(tabId);
@@ -511,7 +683,7 @@ function App() {
     const direct = sessions[activeTab];
     if (direct) return direct;
     const tab = tabs.find((one) => one.id === activeTab);
-    if (tab?.kind === "file") return sessions[tab.sourceTabId] ?? null;
+    if (tab?.kind === "file" || tab?.kind === "log") return sessions[tab.sourceTabId] ?? null;
     return null;
   }, [activeTab, sessions, tabs]);
 
@@ -570,6 +742,13 @@ function App() {
     openTab({ id: newId(), kind: "file", side, path, name: path.split(/[\\/]/).pop() || path, sourceTabId });
   };
 
+  /** 文件面板点「日志查看器」→ 开一个只读的大文件视图；同一个文件只开一个 */
+  const openLog = (sourceTabId: string, path: string) => {
+    const existing = tabs.find((tab) => tab.kind === "log" && tab.path === path && tab.sourceTabId === sourceTabId);
+    if (existing) { focusTab(existing.id); return; }
+    openTab({ id: newId(), kind: "log", path, name: path.split("/").pop() || path, sourceTabId });
+  };
+
   // —— 标签条 ——
   const tabItems: TabItem[] = useMemo(() => {
     // 同一台机器开了好几个标签时，名字后面挂个序号，不然全长一样分不清
@@ -597,10 +776,104 @@ function App() {
         if (tab.kind === "conn") return { id: tab.id, kind: "conn" as const, label: "新建连接", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "settings") return { id: tab.id, kind: "settings" as const, label: "设置" };
         if (tab.kind === "file") return { id: tab.id, kind: "file" as const, label: tab.name, dirty: !!dirtyTabs[tab.id] };
+        if (tab.kind === "log") return { id: tab.id, kind: "log" as const, label: tab.name };
         const note = notes.find((one) => one.id === tab.noteId);
         return { id: tab.id, kind: "note" as const, label: note?.title || "无题" };
     });
   }, [tabs, connections, notes, dirtyTabs, sessions]);
+
+  // —— 命令面板的菜谱 ——
+  // 每一项都指向一个已经存在的动作，面板本身不新增能力，只是把散在
+  // 抽屉 / 页签 / 右键菜单里的入口收拢到一个搜索框里。
+  const commands: Command[] = useMemo(() => {
+    const list: Command[] = [];
+
+    // 已经开着的标签：切过去比重新开一个便宜
+    for (const item of tabItems) {
+      if (item.id === activeTab) continue;
+      list.push({
+        id: `tab:${item.id}`,
+        group: "打开着的标签",
+        label: item.label,
+        hint: item.kind === "session" ? (item.status === "live" ? "连着" : "没连") : undefined,
+        run: () => focusTab(item.id),
+      });
+    }
+
+    // 当前会话标签内部的几页
+    const here = tabs.find((one) => one.id === activeTab);
+    if (here?.kind === "session") {
+      const pages: { mode: SessionMode; label: string }[] = [
+        { mode: "term", label: "终端" },
+        { mode: "files", label: "文件（SFTP）" },
+        { mode: "stats", label: "状态：CPU / 内存 / 进程 / 端口" },
+        { mode: "tunnel", label: "隧道：端口转发" },
+        { mode: "config", label: "这条连接的配置" },
+      ];
+      for (const page of pages) {
+        list.push({
+          id: `page:${page.mode}`,
+          group: "这个标签里",
+          label: page.label,
+          hint: PAGE_SHORTCUTS[page.mode],
+          keywords: page.mode,
+          run: () => wake(here.id, page.mode, false),
+        });
+      }
+    }
+
+    for (const conn of connections) {
+      list.push({
+        id: `conn:${conn.id}`,
+        group: "连接",
+        label: conn.name,
+        hint: `${conn.username}@${conn.host}`,
+        keywords: `${conn.host} ${conn.username} ${conn.group}`,
+        run: () => openConn(conn),
+      });
+    }
+
+    // 片段插到当前终端里 —— 没有活着的会话就别列，点了也没地方去
+    if (activeSession) {
+      for (const snip of snippets) {
+        list.push({
+          id: `snip:${snip.id}`,
+          group: "指令片段",
+          label: snip.title,
+          hint: snip.command,
+          keywords: `${snip.command} ${snip.tag}`,
+          run: () => sendCommand(snip.command, false),
+        });
+      }
+    }
+
+    for (const note of notes) {
+      list.push({
+        id: `note:${note.id}`,
+        group: "备忘",
+        label: note.title || "无题",
+        keywords: note.body.slice(0, 200),
+        run: () => openNote(note),
+      });
+    }
+
+    list.push(
+      { id: "act:new", group: "动作", label: "新建连接", hint: SHORTCUTS.newConn, run: openNewConn },
+      { id: "act:note", group: "动作", label: "新建备忘", run: newNote },
+      { id: "act:settings", group: "动作", label: "设置", hint: SHORTCUTS.settings, run: openSettings },
+      {
+        id: "act:theme",
+        group: "动作",
+        label: mode === "dark" ? "换成浅色" : "换成深色",
+        keywords: "theme 主题 深色 浅色",
+        run: () => changeMode(mode === "dark" ? "light" : "dark"),
+      },
+    );
+    if (activeTab) {
+      list.push({ id: "act:close", group: "动作", label: "关掉当前标签", hint: SHORTCUTS.closeTab, run: () => closeTab(activeTab) });
+    }
+    return list;
+  }, [tabItems, tabs, activeTab, connections, snippets, notes, activeSession, mode]);
 
   const inspectingId = useMemo(() => {
     const tab = tabs.find((one) => one.id === activeTab);
@@ -749,13 +1022,43 @@ function App() {
       </aside>
 
       <main className="workspace">
-        <TabBar items={tabItems} activeId={activeTab} onSelect={focusTab} onClose={closeTab} onCloseMany={closeTabs} />
+        <TabBar
+          items={tabItems}
+          activeId={activeTab}
+          onSelect={focusTab}
+          onClose={closeTab}
+          onCloseMany={closeTabs}
+          splitId={splitTab}
+          splitDir={splitDir}
+          onSplit={putInSplit}
+          onEndSplit={endSplit}
+          onFlipDir={() => setSplitDir((one) => (one === "row" ? "col" : "row"))}
+        />
 
-        <div className="tab-stack">
+        <div className={`tab-stack ${splitTab ? `split ${splitDir}` : ""}`}>
           {tabs.map((tab) => {
-            const on = tab.id === activeTab;
+            const focused = tab.id === activeTab;
+            const inSplit = tab.id === splitTab;
+            // 分屏时两块都在屏幕上，但「焦点」只有一个：
+            // 拖拽上传和 Del / F2 这类快捷键得认焦点，两块都接就不知道该落到谁头上了
+            const on = focused || inSplit;
+            // 位置只看 mainFirst，焦点只看 focused：点另一半拿焦点时两块不换位
+            const first = focused ? mainFirst : !mainFirst;
             const pane = (content: React.ReactNode) => (
-              <div className="tab-pane" key={tab.id} style={{ display: on ? "flex" : "none" }}>{content}</div>
+              <div
+                className={`tab-pane ${on && splitTab ? (focused ? "half focus" : "half") : ""}`}
+                key={tab.id}
+                style={{
+                  display: on ? "flex" : "none",
+                  ...(on && splitTab
+                    ? { order: first ? 1 : 3, flex: `0 0 ${(first ? splitRatio : 1 - splitRatio) * 100}%` }
+                    : {}),
+                }}
+                // 点哪半哪半得焦点，跟窗口管理器一个手感
+                onMouseDownCapture={() => { if (inSplit) focusTab(tab.id); }}
+              >
+                {content}
+              </div>
             );
 
             if (tab.kind === "session") {
@@ -764,7 +1067,8 @@ function App() {
               return pane(
                 <SessionView
                   conn={conn}
-                  active={on}
+                  active={focused}
+                  visible={on}
                   idleMinutes={settings.idleMinutes}
                   termScheme={settings.termScheme}
                   termVariant={termVariant}
@@ -780,9 +1084,15 @@ function App() {
                   jump={conn.jumpId ? connections.find((one) => one.id === conn.jumpId) ?? null : null}
                   onSession={(sessionId) => handleSession(tab.id, sessionId)}
                   onEditFile={(side, path) => openEditor(tab.id, side, path)}
+                  onOpenLog={(path) => openLog(tab.id, path)}
+                  inSync={!!syncTabs[tab.id]}
+                  syncCount={syncLive.length}
+                  onToggleSync={() => toggleSync(tab.id)}
+                  onBroadcast={(data) => broadcast(tab.id, data)}
                   onSaveConn={saveConn}
                   onDeleteConn={handleDeleteConn}
                   onConfigDirty={(dirty) => markDirty(tab.id, dirty)}
+                  appMenu={appMenuFor(tab.id)}
                 />,
               );
             }
@@ -823,6 +1133,13 @@ function App() {
                   onRestoreChange={(restoreTabs) => changeSettings({ restoreTabs })}
                   updateNotice={settings.updateNotice}
                   onUpdateNoticeChange={(updateNotice) => changeSettings({ updateNotice })}
+                  hotkey={settings.hotkey}
+                  hotkeyErr={hotkeyErr}
+                  onHotkeyChange={(hotkey) => changeSettings({ hotkey })}
+                  syncUrl={settings.syncUrl}
+                  syncUser={settings.syncUser}
+                  syncedAt={settings.syncedAt}
+                  onSyncChange={(next) => changeSettings(next)}
                   fresh={fresh}
                   liveSessions={liveCount}
                   onDataChanged={reloadAll}
@@ -849,12 +1166,39 @@ function App() {
               );
             }
 
+            if (tab.kind === "log") {
+              // 日志跟着那条连接的编码走：GBK 的机器上打出来的日志就该按 GBK 解
+              const owner = tabs.find((one) => one.id === tab.sourceTabId);
+              const ownerConn =
+                owner?.kind === "session" ? connections.find((one) => one.id === owner.connId) : undefined;
+              return pane(
+                <LogView
+                  path={tab.path}
+                  sessionId={sessions[tab.sourceTabId] ?? null}
+                  defaultEncoding={ownerConn?.encoding}
+                  onClose={() => closeTab(tab.id)}
+                />,
+              );
+            }
+
             const note = notes.find((one) => one.id === tab.noteId);
             if (!note) return null;
             return pane(
               <NoteView key={note.id} note={note} onChange={(next) => setNotes(saveNote(next))} onDelete={handleDeleteNote} />,
             );
           })}
+
+          {splitTab && (
+            <div
+              className="split-grip"
+              style={{ order: 2 }}
+              role="separator"
+              aria-label="拖动调整两半的宽度"
+              onMouseDown={dragSplit}
+              onDoubleClick={() => setSplitRatio(0.5)}
+              title="拖着调宽窄，双击回到一半一半"
+            />
+          )}
 
           {tabs.length === 0 && (
             <div className="welcome">
@@ -867,6 +1211,7 @@ function App() {
         </div>
       </main>
 
+      {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
       {dialog && <Dialog {...dialog} onClose={() => setDialog(null)} />}
     </div>
   );
