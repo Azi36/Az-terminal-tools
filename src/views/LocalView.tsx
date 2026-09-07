@@ -3,25 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "../components/Terminal";
 import type { MenuEntry } from "../components/ContextMenu";
-import { IconChevronRight, IconPulse, IconRefresh, IconTerminal, IconX } from "../components/icons";
+import { IconPulse, IconTerminal } from "../components/icons";
+import { GitPanel, type GitInfo, type ShellFamily } from "../components/GitPanel";
 import { copyText } from "../clipboard";
 
 interface PtyInfo { shell: string; cwd: string; tracksCwd: boolean }
-interface GitChange { status: string; path: string }
-interface GitCommit { hash: string; subject: string; when: string }
-interface GitInfo {
-  root: string;
-  branch: string;
-  detached: boolean;
-  ahead: number;
-  behind: number;
-  upstream: boolean;
-  changes: GitChange[];
-  truncated: boolean;
-  commits: GitCommit[];
-  branches: string[];
-  stashes: number;
-}
 
 type Phase =
   | { kind: "starting" }
@@ -49,38 +35,6 @@ interface LocalViewProps {
 
 const errText = (e: unknown): string =>
   e && typeof e === "object" && "message" in e ? String((e as { message: string }).message) : String(e);
-
-/** git status 两位状态码 → 人话 */
-const STATUS_LABEL: Record<string, string> = {
-  "??": "新",
-  "!!": "忽略",
-  A: "增",
-  M: "改",
-  D: "删",
-  R: "改名",
-  C: "复制",
-  U: "冲突",
-};
-const statusOf = (code: string): { text: string; cls: string } => {
-  if (code === "??") return { text: "新", cls: "new" };
-  const staged = code[0] !== " " && code[0] !== "?";
-  const ch = staged ? code[0] : code[1];
-  const text = STATUS_LABEL[ch] ?? ch;
-  return { text: staged ? `${text}·暂存` : text, cls: ch === "D" ? "del" : ch === "U" ? "conflict" : staged ? "staged" : "mod" };
-};
-
-/** 面板上那排 git 快捷命令。都是送进终端执行的，输出用户自己看 */
-const GIT_ACTIONS: { label: string; cmd: string; title: string; danger?: boolean }[] = [
-  { label: "状态", cmd: "git status", title: "git status" },
-  { label: "拉取", cmd: "git pull", title: "git pull" },
-  { label: "推送", cmd: "git push", title: "git push" },
-  { label: "抓取", cmd: "git fetch --all --prune", title: "git fetch --all --prune" },
-  { label: "差异", cmd: "git diff", title: "git diff（工作区相对暂存区）" },
-  { label: "日志", cmd: "git log --oneline --graph -20", title: "git log --oneline --graph -20" },
-  { label: "暂存全部", cmd: "git add -A", title: "git add -A" },
-  { label: "stash", cmd: "git stash", title: "git stash（把工作区改动收起来）" },
-  { label: "stash pop", cmd: "git stash pop", title: "git stash pop" },
-];
 
 /** 终端顶上那排通用命令。ls / cd .. / clear 在 PowerShell 和 bash 里都能用 */
 const QUICK: { label: string; cmd: string }[] = [
@@ -172,12 +126,18 @@ export function LocalView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, run]);
 
-  // 目录变了 → 上报 + 刷 git
+  // 目录变了 → 上报 + 刷 git。
+  // 每次问都带个序号，回来时不是最新那一次就丢掉：cd 得快的时候（或者刚起 shell 时
+  // 初始目录和 shell 报回来的目录一前一后），先发的那次后回来会把新目录的结果盖掉，
+  // 面板就停在上一个仓库上不动了。
+  const gitSeq = useRef(0);
   const refreshGit = useCallback((dir: string) => {
-    if (!dir) { setGit(null); return; }
+    const mine = (gitSeq.current += 1);
+    const fresh = () => live.current && gitSeq.current === mine;
+    if (!dir) { setGit(null); setGitErr(null); return; }
     invoke<GitInfo | null>("git_info", { cwd: dir })
-      .then((got) => { if (live.current) { setGit(got); setGitErr(null); } })
-      .catch((e) => { if (live.current) { setGit(null); setGitErr(errText(e)); } });
+      .then((got) => { if (fresh()) { setGit(got); setGitErr(null); } })
+      .catch((e) => { if (fresh()) { setGit(null); setGitErr(errText(e)); } });
   }, []);
   useEffect(() => {
     if (!cwd) return;
@@ -211,6 +171,9 @@ export function LocalView({
   };
 
   const shellName = info?.shell.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "") ?? "shell";
+  /** git 面板往终端里送命令时按这个加引号：PowerShell 和 POSIX 的转义规则不一样 */
+  const shellFamily: ShellFamily =
+    /^(pwsh|powershell)$/i.test(shellName) ? "pwsh" : /^cmd$/i.test(shellName) ? "cmd" : "posix";
 
   const termMenu: MenuEntry[] = [
     { label: gitOpen ? "收起 git 面板" : "展开 git 面板", onClick: () => setGitOpen((on) => !on) },
@@ -298,110 +261,16 @@ export function LocalView({
         </div>
 
         {gitOpen && (
-          <aside className="git-panel">
-            {git ? (
-              <>
-                <header className="git-head">
-                  <IconPulse size={14} />
-                  <b title={git.detached ? "游离 HEAD" : git.branch}>{git.detached ? `HEAD@${git.branch}` : git.branch}</b>
-                  {git.upstream ? (
-                    <span className="git-sync" title="相对远程分支：领先 / 落后">
-                      {git.ahead > 0 && <em className="up">↑{git.ahead}</em>}
-                      {git.behind > 0 && <em className="down">↓{git.behind}</em>}
-                      {git.ahead === 0 && git.behind === 0 && <em className="ok">同步</em>}
-                    </span>
-                  ) : (
-                    <span className="git-sync"><em className="dim">无远程</em></span>
-                  )}
-                  <button className="icon-btn sm" type="button" title="刷新" onClick={() => refreshGit(cwd)}><IconRefresh size={13} /></button>
-                  <button className="icon-btn sm" type="button" title="收起" onClick={() => setGitOpen(false)}><IconX size={13} /></button>
-                </header>
-
-                <div className="git-acts">
-                  {GIT_ACTIONS.map((one) => (
-                    <button key={one.cmd} className="btn-ghost sm" type="button" title={one.title} disabled={phase.kind !== "open"} onClick={() => send(one.cmd)}>
-                      {one.label}
-                    </button>
-                  ))}
-                </div>
-
-                {git.branches.length > 1 && (
-                  <label className="git-switch">
-                    <span>切分支</span>
-                    <select
-                      className="enc-pick"
-                      value={git.detached ? "" : git.branch}
-                      disabled={phase.kind !== "open"}
-                      onChange={(e) => { if (e.target.value && e.target.value !== git.branch) send(`git checkout ${e.target.value}`); }}
-                    >
-                      {git.detached && <option value="">（游离 HEAD）</option>}
-                      {git.branches.map((one) => <option key={one} value={one}>{one}</option>)}
-                    </select>
-                  </label>
-                )}
-
-                <section className="git-sec">
-                  <h4>
-                    改动<em>{git.changes.length}{git.truncated ? "+" : ""}</em>
-                    {git.stashes > 0 && <small title="git stash list">stash ×{git.stashes}</small>}
-                  </h4>
-                  {git.changes.length === 0 ? (
-                    <p className="page-hint">工作区干净。</p>
-                  ) : (
-                    <ul className="git-list">
-                      {git.changes.map((one) => {
-                        const s = statusOf(one.status);
-                        return (
-                          <li key={`${one.status}${one.path}`} title={`${one.status} ${one.path}`}>
-                            <i className={`git-tag ${s.cls}`}>{s.text}</i>
-                            <button type="button" className="git-path" title={`git diff -- ${one.path}`} onClick={() => send(`git diff -- "${one.path}"`)}>
-                              {one.path}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </section>
-
-                <section className="git-sec">
-                  <h4>最近提交</h4>
-                  {git.commits.length === 0 ? (
-                    <p className="page-hint">还没有提交。</p>
-                  ) : (
-                    <ul className="git-list commits">
-                      {git.commits.map((one) => (
-                        <li key={one.hash}>
-                          <button type="button" className="git-path" title={`git show ${one.hash}`} onClick={() => send(`git show ${one.hash}`)}>
-                            <code>{one.hash}</code> {one.subject}
-                          </button>
-                          <small>{one.when}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
-                <p className="page-hint git-foot">面板上的按钮都是把命令送进左边的终端，输出在那儿看。</p>
-              </>
-            ) : (
-              <div className="git-none">
-                <IconPulse size={16} />
-                <b>{gitErr ? "git 面板出错" : "这儿不是 git 仓库"}</b>
-                <small>
-                  {gitErr
-                    ? gitErr
-                    : info && !info.tracksCwd
-                      ? "这个 shell 不上报目录：点顶上的路径手填一个仓库目录。"
-                      : "cd 进一个仓库，面板会自己出来。"}
-                </small>
-                <div className="git-acts">
-                  <button className="btn-ghost sm" type="button" disabled={phase.kind !== "open"} onClick={() => send("git init")}>在这儿 git init</button>
-                  <button className="btn-ghost sm" type="button" onClick={() => refreshGit(cwd)}><IconRefresh size={13} />刷新</button>
-                  <button className="btn-ghost sm" type="button" onClick={() => setGitOpen(false)}><IconChevronRight size={13} />收起</button>
-                </div>
-              </div>
-            )}
-          </aside>
+          <GitPanel
+            git={git}
+            error={gitErr}
+            ready={phase.kind === "open"}
+            tracksCwd={info?.tracksCwd ?? true}
+            shellFamily={shellFamily}
+            onRun={send}
+            onRefresh={() => refreshGit(cwd)}
+            onClose={() => setGitOpen(false)}
+          />
         )}
       </div>
     </div>

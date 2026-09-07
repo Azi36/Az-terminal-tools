@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { fmtWhen } from "../format";
+import { fmtDuration, fmtRate, fmtSize, fmtWhen } from "../format";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -11,6 +11,7 @@ import {
 import type { Release } from "../update";
 import { SHORTCUT_GROUPS } from "../shortcuts";
 import {
+  IconCheck,
   IconDownload,
   IconLock,
   IconMonitor,
@@ -101,6 +102,80 @@ const HOST_POLICIES: { value: "auto" | "ask" | "off"; label: string }[] = [
 ];
 
 /** 三张全宽卡片：连接 / 外观 / 关于，里头再分小节 */
+/**
+ * 更新走的四步。之前界面上只有一句「下载中……」——包几十兆，用户看着一句不动的话
+ * 分不出「在下」还是「卡死了」，于是把每一步和下载进度都摆出来。
+ */
+type UpdatePhase = "idle" | "checking" | "downloading" | "installing" | "done";
+
+interface UpdateState {
+  /** done = 装好了，就差重启；重启这一下留给用户自己点 */
+  state: UpdatePhase;
+  /** 正在更新到哪一版 */
+  version?: string;
+  /** 已下载字节 */
+  got?: number;
+  /** 总字节。服务器不报 Content-Length 时没有，这时进度条走不确定态 */
+  total?: number;
+  /** 字节 / 秒，滑动平均过的 */
+  rate?: number;
+  note?: string;
+  tone?: "ok" | "bad";
+}
+
+const UPDATE_STEPS: { key: UpdatePhase; label: string }[] = [
+  { key: "checking", label: "检查" },
+  { key: "downloading", label: "下载" },
+  { key: "installing", label: "安装" },
+  { key: "done", label: "重启生效" },
+];
+
+/** 更新进行时的那块卡片：走到第几步、下了多少、多快、还剩多久 */
+function UpdateProgress({ update }: { update: UpdateState }) {
+  const at = UPDATE_STEPS.findIndex((one) => one.key === update.state);
+  if (at < 0) return null;
+  const { got = 0, total, rate = 0 } = update;
+  const pct = total ? Math.min(100, (got / total) * 100) : 0;
+  const left = total && rate > 0 ? fmtDuration((total - got) / rate) : "";
+
+  return (
+    <div className="up-card">
+      <div className="up-steps">
+        {UPDATE_STEPS.map((one, i) => (
+          <div className={`up-step ${i < at ? "past" : i === at ? "now" : ""}`} key={one.key}>
+            <i>{i < at ? <IconCheck size={11} /> : i + 1}</i>
+            <span>{one.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {update.state === "downloading" && (
+        <>
+          {/* 总大小拿不到时用不确定条：与其编一个假的百分比，不如老实说「在下，不知道还剩多少」 */}
+          <div className={`up-bar ${total ? "" : "guessing"}`}>
+            <i style={total ? { width: `${pct}%` } : undefined} />
+          </div>
+          <div className="up-meta">
+            <span>{total ? `${fmtSize(got)} / ${fmtSize(total)}` : `已下载 ${fmtSize(got)}`}</span>
+            <span className="up-dot" />
+            <span>{rate > 0 ? fmtRate(rate) : "连接中……"}</span>
+            {left && (<><span className="up-dot" /><span>还剩 {left}</span></>)}
+            {total ? <b>{pct.toFixed(0)}%</b> : null}
+          </div>
+        </>
+      )}
+
+      {update.state === "checking" && <p className="up-say">正在问有没有新版……</p>}
+      {update.state === "installing" && (
+        <>
+          <div className="up-bar guessing"><i /></div>
+          <p className="up-say">校验签名、写入安装包，这一步不能中断。</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function Settings({
   mode,
   onModeChange,
@@ -223,12 +298,9 @@ export function Settings({
   // 这里这个 check() 是真去下更新包的，走 GitHub，有签名校验。
   // 分开是因为 api.github.com 国内经常拉不动 —— 拉不动的后果不是"提示晚了"，
   // 是用户永远不知道有新版。
-  const [update, setUpdate] = useState<{
-    /** done = 装好了，就差重启；重启这一下留给用户自己点 */
-    state: "idle" | "checking" | "downloading" | "done";
-    note?: string;
-    tone?: "ok" | "bad";
-  }>({ state: "idle" });
+  const [update, setUpdate] = useState<UpdateState>({ state: "idle" });
+  /** 下载的计速用的采样点。放 ref 里：每来一个包都 setState 是白烧一遍渲染 */
+  const pace = useRef({ at: 0, got: 0, mark: 0, rate: 0 });
 
   const checkUpdate = async () => {
     setUpdate({ state: "checking" });
@@ -238,15 +310,41 @@ export function Settings({
         setUpdate({ state: "idle", note: `已经是最新的（v${version}）`, tone: "ok" });
         return;
       }
-      setUpdate({ state: "downloading", note: `发现 v${found.version}，下载中……`, tone: "ok" });
-      await found.downloadAndInstall();
+      pace.current = { at: Date.now(), got: 0, mark: 0, rate: 0 };
+      setUpdate({ state: "downloading", version: found.version, got: 0 });
+      await found.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          // contentLength 后端不一定给（分块传输就没有）：给不出总数就走不确定进度条
+          pace.current = { at: Date.now(), got: 0, mark: 0, rate: 0 };
+          setUpdate((one) => ({ ...one, state: "downloading", got: 0, total: event.data.contentLength || undefined }));
+          return;
+        }
+        if (event.event === "Progress") {
+          pace.current.got += event.data.chunkLength;
+          const now = Date.now();
+          const span = now - pace.current.at;
+          // 400ms 采一次样：更新包几十兆、包上千个，每个都往界面上推没有意义
+          if (span < 400) return;
+          const spot = ((pace.current.got - pace.current.mark) * 1000) / span;
+          // 滑动平均，不然网络一抖数字就乱跳
+          pace.current.rate = pace.current.rate ? pace.current.rate * 0.7 + spot * 0.3 : spot;
+          pace.current.at = now;
+          pace.current.mark = pace.current.got;
+          setUpdate((one) => ({ ...one, got: pace.current.got, rate: pace.current.rate }));
+          return;
+        }
+        if (event.event === "Finished") {
+          // 下完到装完之间没有进度可报，但这一段是真的要等（校验签名 + 落盘），得让界面说一声
+          setUpdate((one) => ({ ...one, state: "installing", got: one.total ?? pace.current.got }));
+        }
+      });
       // 装好了**不自动重启**：重启等于把所有开着的会话掐掉、没保存的编辑器内容丢掉。
       // 用户点的可能只是「检查一下」，不该顺手替他做这个决定。
-      setUpdate({ state: "done", note: `v${found.version} 装好了，重启之后生效`, tone: "ok" });
+      setUpdate({ state: "done", version: found.version, note: `v${found.version} 装好了，重启之后生效`, tone: "ok" });
     } catch (e) {
       setUpdate({
         state: "idle",
-        note: `查不到更新：${e instanceof Error ? e.message : String(e)}`,
+        note: `更新没成：${e instanceof Error ? e.message : String(e)}`,
         tone: "bad",
       });
     }
@@ -764,8 +862,13 @@ export function Settings({
                     重启生效
                   </button>
                 ) : (
-                  <button className="btn-ghost sm" type="button" disabled={update.state === "checking" || update.state === "downloading"} onClick={checkUpdate}>
-                    {update.state === "checking" ? "查着……" : update.state === "downloading" ? "下载中……" : "检查更新"}
+                  <button
+                    className="btn-ghost sm"
+                    type="button"
+                    disabled={update.state !== "idle"}
+                    onClick={checkUpdate}
+                  >
+                    {update.state === "idle" ? "检查更新" : <><span className="spin-dot" />在更新</>}
                   </button>
                 )}
                 <button className="btn-ghost sm" type="button" onClick={() => void openUrl("https://azi36.com")}>
@@ -791,6 +894,9 @@ export function Settings({
                 </div>
               </div>
             )}
+
+            {/* 检查 / 下载 / 安装 这三步都在这块卡片里报进度 */}
+            <UpdateProgress update={update} />
 
             {update.note && (
               <p className={`data-note ${update.tone}`}>
