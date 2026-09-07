@@ -25,6 +25,7 @@ import {
   deleteSnippet,
   forgetScope,
   loadConnections,
+  loadDbs,
   loadNotes,
   loadOpenTabs,
   loadSettings,
@@ -32,6 +33,8 @@ import {
   newId,
   saveOpenTabs,
   saveConnection,
+  saveDb,
+  deleteDb,
   saveNote,
   saveSettings,
   saveSnippet,
@@ -41,10 +44,13 @@ import {
 import { applyHotkey } from "./hotkey";
 import { matchShortcut, PAGE_SHORTCUTS, SHORTCUTS } from "./shortcuts";
 import { LocalView } from "./views/LocalView";
+import { DbView } from "./views/DbView";
+import { DbPage } from "./views/DbPage";
+import { DbList } from "./components/DbList";
 import type { MenuEntry } from "./components/ContextMenu";
 import { dropSecret } from "./secrets";
 import { checkRelease, type Release } from "./update";
-import type { Connection, Note, SessionMode, Snippet, Tab, Wake } from "./types";
+import type { Connection, DbConn, Note, SessionMode, Snippet, Tab, Wake } from "./types";
 
 type Drawer = "conns" | "snippets" | "notes";
 
@@ -107,6 +113,7 @@ function App() {
   const [localCwd, setLocalCwd] = useState<Record<string, string>>({});
   /** 本地终端标签里活着的 pty id；shell 退了就是 null */
   const [localPtys, setLocalPtys] = useState<Record<string, string | null>>({});
+  const [dbs, setDbs] = useState<DbConn[]>([]);
 
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
   // 初值直接从落盘的那份读（没有就是 cleanSettings 给的默认值），别在这儿再抄一份默认值
@@ -124,6 +131,7 @@ function App() {
     setConnections(loadConnections());
     setSnippets(loadSnippets());
     setNotes(loadNotes());
+    setDbs(loadDbs());
     setSettings(loadSettings());
   }, []);
 
@@ -158,6 +166,8 @@ function App() {
         back.push({ id: newId(), kind: "settings" });
       } else if (one.kind === "local") {
         back.push({ id: newId(), kind: "local", cwd: one.cwd });
+      } else if (one.kind === "db" && loadDbs().some((db) => db.id === one.dbId)) {
+        back.push({ id: newId(), kind: "db", dbId: one.dbId, initialMode: "console", autoConnect: false });
       }
     }
     if (back.length > 0) {
@@ -198,6 +208,7 @@ function App() {
         if (tab.kind === "note") return [{ kind: "note", noteId: tab.noteId }];
         if (tab.kind === "settings") return [{ kind: "settings" }];
         if (tab.kind === "local") return [{ kind: "local", cwd: localCwd[tab.id] ?? tab.cwd }];
+        if (tab.kind === "db") return [{ kind: "db", dbId: tab.dbId }];
         return [];
       }),
     );
@@ -436,13 +447,13 @@ function App() {
   };
 
   const dropTab = useCallback((id: string) => {
-    // 会话标签关掉 = 断开这条 SSH，别把连接漏在引擎里
-    const sessionId = sessionsRef.current[id];
-    if (sessionId) invoke("ssh_close", { sessionId }).catch(() => {});
-
     const list = tabsRef.current;
     const index = list.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    // 会话标签关掉 = 断开这条 SSH，别把连接漏在引擎里（数据库标签自己在卸载时关）
+    const sessionId = sessionsRef.current[id];
+    if (sessionId && list[index].kind === "session") invoke("ssh_close", { sessionId }).catch(() => {});
+
     // 会话没了，挂在它下面的编辑器标签也留不住
     const gone = new Set(doomedBy([id]));
     const rest = list.filter((tab) => !gone.has(tab.id));
@@ -554,6 +565,50 @@ function App() {
     return list.length > 0 ? "down" : "idle";
   }, [tabs, sessions]);
 
+  // —— 数据库连接 ——
+  const dbStatusOf = useCallback((dbId: string): ConnStatus => {
+    const list = tabs.filter((tab) => tab.kind === "db" && tab.dbId === dbId);
+    if (list.some((tab) => sessions[tab.id])) return "live";
+    return list.length > 0 ? "down" : "idle";
+  }, [tabs, sessions]);
+
+  /** 开这条库的标签：已经开着就切过去；没开就开一个，记过密码的话会自己连 */
+  const openDb = (db: DbConn, mode: "console" | "config" = "console") => {
+    const existing = tabs.find((tab) => tab.kind === "db" && tab.dbId === db.id);
+    if (existing) { focusTab(existing.id); return; }
+    openTab({ id: newId(), kind: "db", dbId: db.id, initialMode: mode, autoConnect: mode === "console" });
+  };
+  const newDb = () => {
+    const existing = tabs.find((tab) => tab.kind === "dbconn");
+    if (existing) { focusTab(existing.id); return; }
+    openTab({ id: newId(), kind: "dbconn", dbId: null });
+  };
+  const saveDbConn = (db: DbConn) => setDbs(saveDb(db));
+  /** 新建页存下来：这个标签就地变成那条库的标签 */
+  const createDbFromTab = (tabId: string, db: DbConn, connect: boolean) => {
+    setDbs(saveDb(db));
+    markDirty(tabId, false);
+    setTabs((list) =>
+      list.map((tab) =>
+        tab.id === tabId ? { id: tab.id, kind: "db", dbId: db.id, initialMode: connect ? "console" : "config", autoConnect: connect } : tab,
+      ),
+    );
+  };
+  const handleDeleteDb = (db: DbConn) => {
+    setDialog({
+      title: `删除数据库连接「${db.name}」`,
+      message: "只删本机这条记录，库里的数据不动。钥匙串里记的密码也一起忘掉。",
+      confirmText: "删",
+      danger: true,
+      onConfirm: () => {
+        dropSecret(db.id);
+        invoke("creds_forget", { connId: db.id }).catch(() => {});
+        setDbs(deleteDb(db.id));
+        closeTabsOf((tab) => tab.kind === "db" && tab.dbId === db.id);
+      },
+    });
+  };
+
   // —— 侧栏收缩 ——
   // 收成一条图标栏后，点哪个图标就把那个抽屉当浮层弹在旁边；打开 / 切换标签、点外面、Esc 都收起。
   /** 收缩状态下弹出来的是哪个抽屉；null = 没弹 */
@@ -643,18 +698,28 @@ function App() {
           )
         )}
 
-        {/* 数据库、Redis、API 以后落在这一栏，先把位置留出来 */}
-        <button
-          className="kind-head soon"
-          type="button"
-          onClick={() => changeSettings({ foldDb: !settings.foldDb })}
-          title={settings.foldDb ? "展开" : "折起来"}
-        >
-          {settings.foldDb ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
-          <IconDatabase size={13} /> 数据库
-          <span className="kind-count">排队中</span>
-        </button>
-        {!settings.foldDb && <p className="sidebar-empty">MySQL · Redis · API 调试，还没轮到。</p>}
+        <div className="kind-row">
+          <button
+            className="kind-head"
+            type="button"
+            onClick={() => changeSettings({ foldDb: !settings.foldDb })}
+            title={settings.foldDb ? "展开" : "折起来"}
+          >
+            {settings.foldDb ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
+            <IconDatabase size={13} /> 数据库
+            <span className="kind-count">{dbs.length}</span>
+          </button>
+          <button className="kind-add" type="button" title="新建数据库连接" aria-label="新建数据库连接" onClick={newDb}>
+            <IconPlus size={13} />
+          </button>
+        </div>
+        {!settings.foldDb && (
+          dbs.length === 0 ? (
+            <p className="sidebar-empty">MySQL · PostgreSQL · Redis。点右边的加号加一条。</p>
+          ) : (
+            <DbList dbs={dbs} statusOf={dbStatusOf} onOpen={(db) => openDb(db)} onEdit={(db) => openDb(db, "config")} onDelete={handleDeleteDb} />
+          )
+        )}
       </div>
     ) : which === "snippets" ? (
       <SnippetPanel
@@ -797,10 +862,11 @@ function App() {
   // 没道理因为焦点在编辑器上就把整个指令库变灰。
   const activeSession = useMemo(() => {
     if (!activeTab) return null;
-    const direct = sessions[activeTab];
-    if (direct) return direct;
     const tab = tabs.find((one) => one.id === activeTab);
-    if (tab?.kind === "file" || tab?.kind === "log") return sessions[tab.sourceTabId] ?? null;
+    if (!tab) return null;
+    // 只认 SSH 会话：数据库标签也往 sessions 里登记（关窗提示要数它），但它的 id 不能拿去 ssh_write
+    if (tab.kind === "session") return sessions[tab.id] ?? null;
+    if (tab.kind === "file" || tab.kind === "log") return sessions[tab.sourceTabId] ?? null;
     return null;
   }, [activeTab, sessions, tabs]);
 
@@ -910,6 +976,18 @@ function App() {
           seen.set("local", nth);
           return { id: tab.id, kind: "local" as const, label: (total.get("local") ?? 1) > 1 ? `本地终端 #${nth}` : "本地终端" };
         }
+        if (tab.kind === "db") {
+          const db = dbs.find((one) => one.id === tab.dbId);
+          return {
+            id: tab.id,
+            kind: "db" as const,
+            label: db?.name ?? "连接已删",
+            color: db?.color,
+            status: sessions[tab.id] ? ("live" as const) : ("down" as const),
+            dirty: !!dirtyTabs[tab.id],
+          };
+        }
+        if (tab.kind === "dbconn") return { id: tab.id, kind: "dbconn" as const, label: "新建数据库", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "conn") return { id: tab.id, kind: "conn" as const, label: "新建连接", dirty: !!dirtyTabs[tab.id] };
         if (tab.kind === "settings") return { id: tab.id, kind: "settings" as const, label: "设置" };
         if (tab.kind === "file") return { id: tab.id, kind: "file" as const, label: tab.name, dirty: !!dirtyTabs[tab.id] };
@@ -917,7 +995,7 @@ function App() {
         const note = notes.find((one) => one.id === tab.noteId);
         return { id: tab.id, kind: "note" as const, label: note?.title || "无题" };
     });
-  }, [tabs, connections, notes, dirtyTabs, sessions]);
+  }, [tabs, connections, notes, dirtyTabs, sessions, dbs]);
 
   // —— 命令面板的菜谱 ——
   // 每一项都指向一个已经存在的动作，面板本身不新增能力，只是把散在
@@ -959,6 +1037,17 @@ function App() {
       }
     }
 
+    for (const db of dbs) {
+      list.push({
+        id: `db:${db.id}`,
+        group: "数据库",
+        label: db.name,
+        hint: `${db.host}:${db.port}`,
+        keywords: `${db.kind} ${db.host} ${db.group}`,
+        run: () => openDb(db),
+      });
+    }
+
     for (const conn of connections) {
       list.push({
         id: `conn:${conn.id}`,
@@ -997,6 +1086,7 @@ function App() {
     list.push(
       { id: "act:new", group: "动作", label: "新建连接", hint: SHORTCUTS.newConn, run: openNewConn },
       { id: "act:local", group: "动作", label: "新建本地终端", hint: SHORTCUTS.newLocal, run: () => openLocal() },
+      { id: "act:newdb", group: "动作", label: "新建数据库连接", run: newDb },
       { id: "act:note", group: "动作", label: "新建备忘", run: newNote },
       { id: "act:settings", group: "动作", label: "设置", hint: SHORTCUTS.settings, run: openSettings },
       { id: "act:side", group: "动作", label: settings.sideCollapsed ? "展开侧栏" : "收起侧栏", hint: SHORTCUTS.sidebar, run: toggleSide },
@@ -1012,7 +1102,7 @@ function App() {
       list.push({ id: "act:close", group: "动作", label: "关掉当前标签", hint: SHORTCUTS.closeTab, run: () => closeTab(activeTab) });
     }
     return list;
-  }, [tabItems, tabs, activeTab, connections, snippets, notes, activeSession, mode, activeLocal]);
+  }, [tabItems, tabs, activeTab, connections, snippets, notes, activeSession, mode, activeLocal, dbs]);
 
   const inspectingId = useMemo(() => {
     const tab = tabs.find((one) => one.id === activeTab);
@@ -1225,6 +1315,35 @@ function App() {
                   onCwd={(cwd) => setLocalCwd((map) => (map[tab.id] === cwd ? map : { ...map, [tab.id]: cwd }))}
                   onLive={(ptyId) => setLocalPtys((map) => (map[tab.id] === ptyId ? map : { ...map, [tab.id]: ptyId }))}
                   appMenu={appMenuFor(tab.id)}
+                />,
+              );
+            }
+
+            if (tab.kind === "db") {
+              const db = dbs.find((one) => one.id === tab.dbId);
+              if (!db) return null;
+              return pane(
+                <DbView
+                  db={db}
+                  active={focused}
+                  initialMode={tab.initialMode}
+                  autoConnect={tab.autoConnect}
+                  onSession={(sessionId) => handleSession(tab.id, sessionId)}
+                  onSaveDb={saveDbConn}
+                  onDeleteDb={handleDeleteDb}
+                  onConfigDirty={(dirty) => markDirty(tab.id, dirty)}
+                  appMenu={appMenuFor(tab.id)}
+                />,
+              );
+            }
+
+            if (tab.kind === "dbconn") {
+              return pane(
+                <DbPage
+                  db={null}
+                  onSave={(next, connect) => createDbFromTab(tab.id, next, connect)}
+                  onDirtyChange={(dirty) => markDirty(tab.id, dirty)}
+                  onClose={() => closeTab(tab.id)}
                 />,
               );
             }

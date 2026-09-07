@@ -3,12 +3,14 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   loadBookmarks,
   loadConnections,
+  loadDbs,
   loadNotes,
   loadSettings,
   loadSnippets,
   newId,
   saveBookmark,
   saveConnection,
+  saveDb,
   saveNote,
   saveSettings,
   saveSnippet,
@@ -21,6 +23,7 @@ import {
   DEFAULT_USER,
   type Bookmark,
   type Connection,
+  type DbConn,
   type Note,
   type Snippet,
   type Tunnel,
@@ -42,6 +45,8 @@ export interface Backup {
   notes: Note[];
   bookmarks: Bookmark[];
   settings: AppSettings;
+  /** 数据库连接（密码不在里面，跟 SSH 一样在钥匙串）；老备份没有这一段 */
+  dbs?: DbConn[];
 }
 
 const FORMAT = 1;
@@ -55,6 +60,7 @@ export const collect = (): Backup => ({
   notes: loadNotes(),
   bookmarks: loadBookmarks(),
   settings: loadSettings(),
+  dbs: loadDbs(),
 });
 
 const stamp = () => {
@@ -93,6 +99,7 @@ export interface ImportResult {
   notes: number;
   bookmarks: number;
   settings: boolean;
+  dbs: number;
 }
 
 const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
@@ -206,7 +213,7 @@ export async function applyBackup(content: string): Promise<ImportResult> {
     throw new Error("这不像是 AzTerm 导出的备份文件");
   }
 
-  const result: ImportResult = { connections: 0, snippets: 0, notes: 0, bookmarks: 0, settings: false };
+  const result: ImportResult = { connections: 0, snippets: 0, notes: 0, bookmarks: 0, settings: false, dbs: 0 };
 
   if (isArray(backup.connections)) {
     for (const raw of backup.connections) {
@@ -244,6 +251,50 @@ export async function applyBackup(content: string): Promise<ImportResult> {
       if (!raw?.path || !raw?.scope) continue;
       saveBookmark({ id: raw.id || newId(), scope: raw.scope, path: raw.path, label: raw.label || raw.path });
       result.bookmarks += 1;
+    }
+  }
+  if (isArray(backup.dbs)) {
+    for (const raw of backup.dbs as Partial<DbConn>[]) {
+      const kind = raw?.kind === "mysql" || raw?.kind === "postgres" || raw?.kind === "redis" ? raw.kind : null;
+      const host = typeof raw?.host === "string" ? raw.host.trim() : "";
+      if (!kind || !host) continue;
+      const port = Number(raw.port);
+      saveDb({
+        id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
+        kind,
+        name: (typeof raw.name === "string" && raw.name.trim()) || host,
+        host,
+        port: Number.isFinite(port) && port > 0 && port < 65536 ? port : 3306,
+        username: typeof raw.username === "string" ? raw.username : "",
+        database: typeof raw.database === "string" && raw.database ? raw.database : undefined,
+        color: typeof raw.color === "string" && raw.color ? raw.color : COLORS[0],
+        group: (typeof raw.group === "string" && raw.group.trim()) || DEFAULT_GROUP,
+        createdAt: Number(raw.createdAt) || Date.now(),
+        lastUsedAt: Number(raw.lastUsedAt) || undefined,
+      });
+      result.dbs += 1;
+    }
+  }
+  if (isArray(backup.dbs)) {
+    for (const raw of backup.dbs as Partial<DbConn>[]) {
+      const kind = raw?.kind === "mysql" || raw?.kind === "postgres" || raw?.kind === "redis" ? raw.kind : null;
+      const host = typeof raw?.host === "string" ? raw.host.trim() : "";
+      if (!kind || !host) continue;
+      const port = Number(raw.port);
+      saveDb({
+        id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
+        kind,
+        name: (typeof raw.name === "string" && raw.name.trim()) || host,
+        host,
+        port: Number.isFinite(port) && port > 0 && port < 65536 ? port : 3306,
+        username: typeof raw.username === "string" ? raw.username : "",
+        database: typeof raw.database === "string" && raw.database ? raw.database : undefined,
+        color: typeof raw.color === "string" && raw.color ? raw.color : COLORS[0],
+        group: (typeof raw.group === "string" && raw.group.trim()) || DEFAULT_GROUP,
+        createdAt: Number(raw.createdAt) || Date.now(),
+        lastUsedAt: Number(raw.lastUsedAt) || undefined,
+      });
+      result.dbs += 1;
     }
   }
   if (backup.settings && typeof backup.settings === "object") {

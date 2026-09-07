@@ -118,7 +118,36 @@ export type Tab =
   /** 日志查看器：大到编辑器不肯开的远程文件走这条路，只读，按需一屏一屏取 */
   | { id: string; kind: "log"; path: string; name: string; sourceTabId: string }
   /** 本地终端：本机起一个 shell，可以开好几个；cwd 是上次待的目录，恢复标签时从那儿起 */
-  | { id: string; kind: "local"; cwd?: string };
+  | { id: string; kind: "local"; cwd?: string }
+  /** 数据库：一条连接一个标签，控制台 / 配置在里面 */
+  | { id: string; kind: "db"; dbId: string; initialMode?: "console" | "config"; autoConnect?: boolean }
+  /** 只用于「新建数据库连接」，存下来就变成 db 标签 */
+  | { id: string; kind: "dbconn"; dbId: null };
+
+// —— 数据库 ——
+export type DbKind = "mysql" | "postgres" | "redis";
+
+export interface DbConn {
+  id: string;
+  kind: DbKind;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  /** MySQL 的默认库 / PG 的库名 / Redis 的库编号 */
+  database?: string;
+  color: string;
+  group: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  // 密码不在这儿：存系统钥匙串，按 id 取（跟 SSH 连接一个规矩）
+}
+
+export const DB_KINDS: { value: DbKind; label: string; port: number; user: string }[] = [
+  { value: "mysql", label: "MySQL", port: 3306, user: "root" },
+  { value: "postgres", label: "PostgreSQL", port: 5432, user: "postgres" },
+  { value: "redis", label: "Redis", port: 6379, user: "" },
+];
 
 /** 目录项：本地 / 远程同一套形状（由 Rust 侧给出） */
 export interface FsEntry {

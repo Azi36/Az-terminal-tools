@@ -1,4 +1,4 @@
-import type { Bookmark, Connection, Note, Snippet } from "./types";
+import type { Bookmark, Connection, DbConn, Note, Snippet } from "./types";
 
 /**
  * 本地存储。
@@ -15,6 +15,7 @@ const KEYS = {
   snippets: "az-term-snippets",
   notes: "az-term-notes",
   bookmarks: "az-term-bookmarks",
+  dbs: "az-term-dbs",
 } as const;
 
 function read<T>(key: string): T[] {
@@ -59,6 +60,11 @@ function drop<T extends { id: string }>(key: string, id: string): T[] {
 export const loadConnections = () => read<Connection>(KEYS.connections);
 export const saveConnection = (conn: Connection) => upsert(KEYS.connections, conn);
 export const deleteConnection = (id: string) => drop<Connection>(KEYS.connections, id);
+
+// —— 数据库连接 ——
+export const loadDbs = () => read<DbConn>(KEYS.dbs);
+export const saveDb = (db: DbConn) => upsert(KEYS.dbs, db);
+export const deleteDb = (id: string) => drop<DbConn>(KEYS.dbs, id);
 
 // —— 指令库 ——
 export const loadSnippets = () => read<Snippet>(KEYS.snippets);
@@ -220,6 +226,7 @@ const TABS_KEY = "az-term-open-tabs";
 export type SavedTab =
   | { kind: "session"; connId: string; mode?: string }
   | { kind: "local"; cwd?: string }
+  | { kind: "db"; dbId: string }
   | { kind: "note"; noteId: string }
   | { kind: "settings" };
 

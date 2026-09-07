@@ -7,6 +7,7 @@
 #![allow(clippy::result_large_err)]
 
 mod creds;
+mod db;
 mod encoding;
 mod git;
 mod hosts;
@@ -63,6 +64,7 @@ pub fn run() {
         .manage(sftp::SftpState::default())
         .manage(tunnel::TunnelState::default())
         .manage(pty::PtyState::default())
+        .manage(db::DbState::default())
         .invoke_handler(tauri::generate_handler![
             engine_ping,
             ssh::ssh_connect,
@@ -135,6 +137,13 @@ pub fn run() {
             pty::pty_close,
             pty::pty_default_shell,
             git::git_info,
+            db::db_connect,
+            db::db_close,
+            db::db_query,
+            db::db_schema,
+            db::redis_command,
+            db::redis_scan,
+            db::redis_peek,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Az-term");
