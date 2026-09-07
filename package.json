@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test \"scripts/*.test.mjs\"",
+    "test": "node --test scripts/release-notes.test.mjs",
     "notes": "node scripts/release-notes.mjs"
   },
   "dependencies": {
