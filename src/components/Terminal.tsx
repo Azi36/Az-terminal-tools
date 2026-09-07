@@ -48,6 +48,32 @@ interface TerminalProps {
  * （Ctrl+C 中断、Ctrl+F 在 vim 里翻页），抢了就是给用户添堵。
  * 应用级的那些（换标签、命令面板……）见 shortcuts.ts，这儿只负责放行。
  */
+/**
+ * 按「真正能看见的那块」收一遍行列数。
+ *
+ * FitAddon 是拿 `.xterm` 父元素的 computed height 算的，而 padding 它只到 `.xterm` 自己身上找。
+ * 我们的留白加在外层 `.term-host` 上，它找不到，于是把那 16px 也当成了可用高度 ——
+ * 150% 缩放下行高 15.33px，正好多算出一行，最后一行被下边缘裁掉半截。
+ *
+ * 所以 fit 之后再核一次：`.xterm-viewport` 才是可视区（它的 clientWidth 已经扣掉了滚动条），
+ * 行高从真实渲染出来的那一行上量，比任何推算都准。
+ */
+function refit(term: XTerm, fit: FitAddon, host: HTMLElement) {
+  if (!host.clientWidth || !host.clientHeight) return;
+  fit.fit();
+  const view = host.querySelector<HTMLElement>(".xterm-viewport");
+  const row = host.querySelector<HTMLElement>(".xterm-rows > div");
+  const screen = host.querySelector<HTMLElement>(".xterm-screen");
+  if (!view || !row || !screen) return;
+  const cellH = row.getBoundingClientRect().height;
+  const cellW = screen.getBoundingClientRect().width / Math.max(1, term.cols);
+  if (cellH <= 0 || cellW <= 0) return;
+  // 加 0.5px 的容差：DPR 1.5 下这些数都是 1/3 像素，差一点点不该少一整行
+  const rows = Math.max(1, Math.floor((view.getBoundingClientRect().height + 0.5) / cellH));
+  const cols = Math.max(2, Math.floor((view.clientWidth + 0.5) / cellW));
+  if (rows !== term.rows || cols !== term.cols) term.resize(cols, rows);
+}
+
 export function Terminal({
   sessionId, scheme, variant, fontSize, divider, onActivity, onInput, extraMenu, transport = "ssh", onOsc,
 }: TerminalProps) {
@@ -233,7 +259,7 @@ export function Terminal({
       oscRef.current(9, data);
       return true;
     });
-    fit.fit();
+    refit(term, fit, host);
     termRef.current = term;
     fitRef.current = fit;
     searchRef.current = search;
@@ -309,7 +335,7 @@ export function Terminal({
     // 窗口尺寸变化 → 同步 PTY（切到别的页时宽高为 0，别去 fit，会把终端算崩）
     const syncSize = () => {
       if (!host.clientWidth || !host.clientHeight) return;
-      fit.fit();
+      refit(term, fit, host);
       invoke(resizeCmd, { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
     };
     const observer = new ResizeObserver(syncSize);
@@ -348,8 +374,9 @@ export function Terminal({
     if (!term) return;
     term.options.theme = theme;
     term.options.fontSize = fontSize;
-    if (host?.clientWidth && host.clientHeight) {
-      fitRef.current?.fit();
+    const fit = fitRef.current;
+    if (host && fit && host.clientWidth && host.clientHeight) {
+      refit(term, fit, host);
       invoke(resizeCmd, { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
     }
   }, [scheme, variant, fontSize, sessionId, resizeCmd]);
