@@ -30,12 +30,35 @@ jobs:
         id: pick
         run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # 正文从 CHANGELOG 里抠。原来这儿写死一句占位符，每次发版都要人工把
+      # 对应小节贴进网页 —— 0.8.0 那次贴的是渲染后的文字，markdown 标记全丢了。
+      # 抠不到就还用占位符：出包不该因为更新日志没写而失败。
+      - name: 取更新日志
+        id: notes
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/notes.md"
+          if node scripts/release-notes.mjs "$TAG" > "$out" && [ -s "$out" ]; then
+            echo "从 CHANGELOG 取到 $TAG 的小节，$(wc -c < "$out") 字节"
+          else
+            printf 'Windows 装 .msi，macOS 装 .dmg。\n' > "$out"
+            echo "::warning::CHANGELOG.md 里没有 $TAG 的小节，正文先用占位符，发布前自己补"
+          fi
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
       - name: 建草稿
         id: make
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
         with:
           result-encoding: string
           script: |
+            const notes = require('fs').readFileSync(process.env.NOTES_FILE, 'utf8')
             const tag = '${{ steps.pick.outputs.tag }}'
             if (!/^v\d/.test(tag)) {
               core.setFailed(`「${tag}」不像个版本 tag。手动触发时要在输入框里填 v0.7.0 这样的值，` +
@@ -51,6 +74,18 @@ jobs:
             const had = list.find((one) => one.tag_name === tag)
             if (had) {
               core.info(`复用已有的 Release #${had.id}（draft=${had.draft}）`)
+              // 重跑时把正文补上，但只在「还是草稿、而且正文还没被人动过」的时候：
+              // 已经手改过的正文不能覆盖，那是发版前刚删减完的东西
+              const untouched = !had.body?.trim() || had.body.trim() === 'Windows 装 .msi，macOS 装 .dmg。'
+              if (had.draft && untouched && notes.trim()) {
+                await github.rest.repos.updateRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: had.id,
+                  body: notes,
+                })
+                core.info('顺手把更新日志填进去了')
+              }
               return String(had.id)
             }
             const { data } = await github.rest.repos.createRelease({
@@ -60,7 +95,7 @@ jobs:
               // 展示用的名字跟官网统一成 AzTerm；
               // 安装包里的 productName 没动，那个改了会牵动安装包标识和更新器匹配
               name: `AzTerm ${tag}`,
-              body: "Windows 装 .msi，macOS 装 .dmg。",
+              body: notes,
               // 草稿：附件齐不齐要人看过才发，Publish 那一下才会惊动用户
               draft: true,
               prerelease: false,

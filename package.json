@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --test \"scripts/*.test.mjs\"",
+    "notes": "node scripts/release-notes.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

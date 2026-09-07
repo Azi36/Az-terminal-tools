@@ -56,6 +56,11 @@ jobs:
       - name: 前端构建
         run: npm run build
 
+      # 发版脚本的单测。它挂了不会当场有人发现 —— 出包照样成功，
+      # 只是草稿正文悄悄退化成占位符
+      - name: 脚本测试
+        run: npm test
+
       - name: Rust 测试
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
