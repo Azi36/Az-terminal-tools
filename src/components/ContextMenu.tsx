@@ -57,7 +57,7 @@ export function ContextMenu({ menu, onClose }: ContextMenuProps) {
             <hr key={`sep-${i}`} />
           ) : (
             <button
-              key={item.label}
+              key={`${i}-${item.label}`}
               type="button"
               className={item.danger ? "danger" : ""}
               disabled={item.disabled}

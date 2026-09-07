@@ -106,6 +106,13 @@ export function SessionView({
   onConfigDirty,
 }: SessionViewProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   // 刚在配置页填过密码就接过来（只在内存里传，见 secrets.ts）：
   // 用 useState 的惰性初始化取，第一次 render 就到位，下面的自动连能直接用上
   const [seed] = useState(() => takeSecret(conn.id));
@@ -147,8 +154,16 @@ export function SessionView({
   /** 连上了：收拾输入框、挂上会话 */
   const settle = useCallback((sessionId: string) => {
     const tried = attempt.current;
-    if (tried && !tried.silent && remember && tried.typed) setSaved(true);
     attempt.current = null;
+    // 连上的时候标签已经关了（连接慢、用户等不及）：这条会话没人要，直接收掉
+    if (!mounted.current) {
+      invoke("ssh_close", { sessionId }).catch(() => {});
+      return;
+    }
+    if (tried && !tried.silent && remember && tried.typed) setSaved(true);
+    // 上次手动断开的标记到这儿一定过期了：close 事件有可能晚于监听卸掉才到，
+    // 标记留着的话下一次真掉线会被当成"用户自己点的"吞掉
+    byHand.current = false;
     setAskHost(null);
     setAskAuth(null);
     setPassword("");
@@ -177,13 +192,19 @@ export function SessionView({
       return;
     }
     attempt.current = null;
-    // 主机指纹没过：把指纹摆出来让用户自己判断
-    if (err.hostKey) setAskHost(err.hostKey);
+    // 不是在问验证码了，旧的问题卡片得撤掉，不然错误被它盖住、界面像卡死
+    setAskAuth(null);
+    // 主机指纹没过：把指纹摆出来让用户自己判断；已经信任过还报错就是别的问题，指纹卡片也撤
+    setAskHost(err.hostKey ?? null);
     setPhase({ kind: "error", err });
   }, []);
 
   const connect = useCallback(async (silent = false, trustHost = false) => {
     if (conn.protocol === "ftp") return;
+    // 已经在连或已经连上就别再来一条：密码框连按两下 Enter、倒计时归零撞上手动点击，
+    // 都会走到这儿，第二条会话没人管，会一直挂在引擎里
+    const live = phaseRef.current.kind;
+    if (live === "connecting" || live === "open") return;
     if (isKey && !conn.keyPath) {
       setPhase({ kind: "error", err: { message: "这个连接没有配置私钥路径，去「配置」页补上" } });
       return;
@@ -266,10 +287,19 @@ export function SessionView({
   const connectNow = useRef(connect);
   connectNow.current = connect;
 
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
+  /** 用户自己点的连接：自动重连的倒计时作废，别一会儿又替他连一次 */
+  const connectByHand = useCallback((trustHost = false) => {
+    lastRetry.current = null;
+    setRetry(null);
+    void connect(false, trustHost);
+  }, [connect]);
+
+  // 标签关掉时这条连接还开着、还在连、或还在答验证码：App 那边只认已登记的会话，
+  // 半截的得自己收，否则引擎里会漏一条连接一直挂到退出
+  useEffect(() => () => {
+    const live = phaseRef.current;
+    if (live.kind === "open") invoke("ssh_close", { sessionId: live.sessionId }).catch(() => {});
+    if (attempt.current) invoke("ssh_cancel_auth", { sessionId: attempt.current.sessionId }).catch(() => {});
   }, []);
 
   // 开标签先问钥匙串：记过密码（或用密钥）且这次是奔着连来的，就直接连上
@@ -294,6 +324,7 @@ export function SessionView({
   useEffect(() => {
     if (!openSessionId) return;
     let un: UnlistenFn | undefined;
+    let dead = false;
     listen(`ssh://close/${openSessionId}`, () => {
       notify.current(null);
       setLogging(false);
@@ -302,8 +333,11 @@ export function SessionView({
       setPhase({ kind: "error", err: { message: "连接断了，再连一次？" } });
       // 手上有凭据（记过密码或用密钥）才自动重连 —— 否则弹密码框更烦人
       if (retryOn.current && (isKey || savedRef.current)) setRetry({ left: RETRY_TIMES, seconds: 3 });
-    }).then((fn) => (un = fn));
-    return () => un?.();
+    }).then((fn) => {
+      if (dead) fn();
+      else un = fn;
+    });
+    return () => { dead = true; un?.(); };
   }, [openSessionId, isKey]);
 
   // —— 自动重连 ——
@@ -358,8 +392,6 @@ export function SessionView({
 
   // 侧栏第二次点同一台机器（双击连接 / 打开文件面板 / 看配置）就走这儿。
   // 没有它的话，标签已经开着时那一下点击只是切过去，「连接」那件事没人做。
-  const phaseRef = useRef(phase);
-  phaseRef.current = phase;
   const wokeAt = useRef(wake?.seq ?? 0);
   useEffect(() => {
     const seq = wake?.seq ?? 0;
@@ -538,7 +570,7 @@ export function SessionView({
             className="btn-primary sm"
             type="button"
             disabled={connecting || !canConnect || conn.protocol === "ftp" || !!askAuth}
-            onClick={() => { if (mode === "config") setMode("term"); void connect(); }}
+            onClick={() => { if (mode === "config") setMode("term"); connectByHand(); }}
             title={canConnect ? "连上去" : "先在下面填一次密码"}
           >
             {connecting ? "连接中……" : "连接"}
@@ -596,7 +628,7 @@ export function SessionView({
                     <button
                       className={askHost.kind === "changed" ? "btn-primary danger" : "btn-primary"}
                       type="button"
-                      onClick={() => connect(false, true)}
+                      onClick={() => connectByHand(true)}
                     >
                       {askHost.kind === "changed" ? "我确认过，更新指纹" : "信任并连接"}
                     </button>
@@ -639,7 +671,7 @@ export function SessionView({
                             value={passphrase}
                             placeholder="多数私钥无需密码短语"
                             onChange={(e) => setPassphrase(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && connect()}
+                            onKeyDown={(e) => e.key === "Enter" && connectByHand()}
                           />
                         </div>
                       </label>
@@ -654,7 +686,7 @@ export function SessionView({
                             autoFocus={active}
                             placeholder="输一次，勾上记住就不用再输"
                             onChange={(e) => setPassword(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && connect()}
+                            onKeyDown={(e) => e.key === "Enter" && connectByHand()}
                           />
                         </div>
                       </label>
@@ -672,7 +704,7 @@ export function SessionView({
                         <span className="spin" />
                         <b>{retry.seconds} 秒后自动重连</b>
                         <small>还会再试 {retry.left} 次</small>
-                        <button type="button" onClick={() => setRetry(null)}>不用了</button>
+                        <button type="button" onClick={() => { lastRetry.current = null; setRetry(null); }}>不用了</button>
                       </div>
                     ) : phase.kind === "error" && (
                       <div className="connect-error">
@@ -681,7 +713,7 @@ export function SessionView({
                       </div>
                     )}
 
-                    <button className="btn-primary" type="button" disabled={connecting || !canConnect} onClick={() => connect()}>
+                    <button className="btn-primary" type="button" disabled={connecting || !canConnect} onClick={() => connectByHand()}>
                       {connecting ? "连接中……" : mode === "files" ? "连上并进文件面板" : "连接"}
                     </button>
                     {/* 没有那个勾的时候就别提「勾了记住」，说的是屏幕上不存在的东西 */}

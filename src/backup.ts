@@ -14,7 +14,17 @@ import {
   saveSnippet,
   type AppSettings,
 } from "./store";
-import { COLORS, DEFAULT_ENCODING, DEFAULT_GROUP, DEFAULT_USER, type Bookmark, type Connection, type Note, type Snippet } from "./types";
+import {
+  COLORS,
+  DEFAULT_ENCODING,
+  DEFAULT_GROUP,
+  DEFAULT_USER,
+  type Bookmark,
+  type Connection,
+  type Note,
+  type Snippet,
+  type Tunnel,
+} from "./types";
 
 /**
  * 备份文件。
@@ -84,12 +94,40 @@ const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
  * 一条连接从外面进来时要洗一遍：
  * 别人的文件里什么都可能有，缺字段的补上默认值，不该有的（密码之类）扔掉。
  */
+const cleanPort = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
+};
+
+/** 隧道逐条校验：类型、端口不对的整条丢掉，别把坏配置带进引擎 */
+function cleanTunnel(raw: unknown): Tunnel | null {
+  if (!raw || typeof raw !== "object") return null;
+  const t = raw as Record<string, unknown>;
+  const kind = t.kind === "local" || t.kind === "socks" || t.kind === "remote" ? t.kind : null;
+  if (!kind) return null;
+  const listenPort = cleanPort(t.listenPort);
+  if (!listenPort) return null;
+  // socks 不用填目标，其它两种目标端口必须合法
+  const destPort = kind === "socks" ? (cleanPort(t.destPort) ?? 0) : cleanPort(t.destPort);
+  if (destPort === null) return null;
+  return {
+    id: typeof t.id === "string" && t.id ? t.id : newId(),
+    kind,
+    listenHost: typeof t.listenHost === "string" && t.listenHost ? t.listenHost : "127.0.0.1",
+    listenPort,
+    destHost: typeof t.destHost === "string" ? t.destHost : "",
+    destPort,
+    auto: !!t.auto,
+  };
+}
+
 function cleanConn(raw: Record<string, unknown>): Connection | null {
   const host = typeof raw.host === "string" ? raw.host.trim() : "";
   // 用户名空着按 root（跟新建页一个规矩），别为这个把整条连接丢掉
   const username = (typeof raw.username === "string" ? raw.username.trim() : "") || DEFAULT_USER;
   if (!host) return null;
   const port = Number(raw.port);
+  const tunnels = Array.isArray(raw.tunnels) ? raw.tunnels.map(cleanTunnel).filter((one): one is Tunnel => !!one) : [];
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
     name: (typeof raw.name === "string" && raw.name.trim()) || host,
@@ -105,6 +143,10 @@ function cleanConn(raw: Record<string, unknown>): Connection | null {
     pinned: !!raw.pinned,
     createdAt: Number(raw.createdAt) || Date.now(),
     lastUsedAt: Number(raw.lastUsedAt) || undefined,
+    // 跳板机和隧道不能丢：导入按 id 整条覆盖，少了这两个字段，
+    // 本来过堡垒机的连接会变成直连
+    jumpId: typeof raw.jumpId === "string" && raw.jumpId ? raw.jumpId : undefined,
+    tunnels: tunnels.length > 0 ? tunnels : undefined,
   };
 }
 
@@ -143,7 +185,7 @@ export async function importAll(): Promise<ImportResult | null> {
   }
   if (isArray(backup.snippets)) {
     for (const raw of backup.snippets as Snippet[]) {
-      if (!raw?.command?.trim()) continue;
+      if (typeof raw?.command !== "string" || !raw.command.trim()) continue;
       saveSnippet({
         id: raw.id || newId(),
         title: raw.title?.trim() || raw.command.trim().slice(0, 24),

@@ -14,25 +14,36 @@ on:
       - 'docs/**'
       - '**.md'
 
+# 只做检查，token 只要读权限
+permissions:
+  contents: read
+
 jobs:
   check:
-    runs-on: windows-latest
+    # 两个平台都编：keyring 的后端、cfg(target_os = "macos") 那些分支只在打 tag 时才第一次编译，
+    # 光在 Windows 上全绿不算数 —— 出包那天挂在 macOS 上，tag 已经推出去了
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: 装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
 
       - name: 装 Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           components: clippy
 
       - name: Rust 缓存
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 

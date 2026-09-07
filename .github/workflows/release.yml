@@ -32,7 +32,7 @@ jobs:
 
       - name: 建草稿
         id: make
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           result-encoding: string
           script: |
@@ -83,23 +83,28 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       # 手动触发时 ref 是分支，得显式检出那个 tag，不然打出来的是 main 的代码
-      - uses: actions/checkout@v4
+      #
+      # 第三方 action 一律 pin 到提交号（注释里是对应的版本）：这个 job 的环境里有更新签名的
+      # 私钥，浮动 tag 被上游重指一次就等于把它交出去，之后谁都能给全部用户推更新。
+      # 升级时把提交号换掉，别换回 tag。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.create-release.outputs.tag }}
 
       - name: 装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
 
       - name: 装 Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust 缓存
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
@@ -107,7 +112,7 @@ jobs:
         run: npm ci
 
       - name: 打包 + 传到那个草稿上
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # —— 自动更新的签名 ——
@@ -137,3 +142,46 @@ jobs:
           # latest.json 是自动更新用的清单，让 tauri-action 一起传上去
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # 两个 runner 各自往草稿上合并 latest.json：列出已有的 → 下载合并 → 删旧传新。
+  # 两边要是在同几秒钟内一起走到这步，后传的看不到先传的，文件在、里面却只剩一个平台。
+  # 人工核对附件挡不住这个（文件名都在），所以机器把内容也核一遍；顺手把附件清单也点一遍。
+  verify-updater:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 核对 latest.json 和附件
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const release_id = Number('${{ needs.create-release.outputs.release_id }}')
+            const { data: assets } = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id,
+              per_page: 100,
+            })
+            const names = assets.map((a) => a.name)
+            core.info(`附件：${names.join(', ')}`)
+            const want = ['.msi', '.msi.sig', '.dmg', '.app.tar.gz', '.app.tar.gz.sig', 'latest.json']
+            const missing = want.filter((suffix) => !names.some((n) => n.endsWith(suffix)))
+            if (missing.length) {
+              core.setFailed(`附件不齐：缺 ${missing.join(' ')} —— 少 .sig 或 latest.json 说明签名没成，自动更新是坏的，别 Publish`)
+              return
+            }
+            const json = assets.find((a) => a.name === 'latest.json')
+            const { data } = await github.rest.repos.getReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              asset_id: json.id,
+              headers: { accept: 'application/octet-stream' },
+            })
+            const text = Buffer.from(data).toString('utf8')
+            const platforms = Object.keys(JSON.parse(text).platforms || {})
+            core.info(`latest.json 平台：${platforms.join(', ')}`)
+            const has = (prefix) => platforms.some((k) => k.startsWith(prefix))
+            if (!has('windows-') || !has('darwin-')) {
+              core.setFailed('latest.json 缺平台 —— 两个 runner 上传时互相覆盖了。到 build 里把晚结束的那个平台重跑一次即可。')
+            }

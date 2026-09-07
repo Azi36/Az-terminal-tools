@@ -29,13 +29,13 @@ pub(crate) fn save(conn_id: &str, secret: &str) {
 }
 
 /// 前端问：这条连接记过密码没有
-#[tauri::command]
+#[tauri::command(async)]
 pub fn creds_has(conn_id: String) -> bool {
     load(&conn_id).is_some()
 }
 
 /// 忘掉这条连接的凭据
-#[tauri::command]
+#[tauri::command(async)]
 pub fn creds_forget(conn_id: String) -> Result<(), SshError> {
     let Some(entry) = entry(&conn_id) else {
         return Ok(());

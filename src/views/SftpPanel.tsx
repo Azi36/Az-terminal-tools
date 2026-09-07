@@ -176,6 +176,14 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
   const remotePaneRef = useRef<HTMLDivElement>(null);
   const remotePathRef = useRef("");
   remotePathRef.current = remote?.path ?? "";
+  const localPathRef = useRef("");
+  localPathRef.current = local?.path ?? "";
+  // 队列泵和系统拖放的监听都是长跑闭包，重连后 sessionId 会换，只能从 ref 里拿
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  // 目录切换的请求序号：慢的旧响应回来时序号对不上就丢掉，别盖住新目录
+  const localSeq = useRef(0);
+  const remoteSeq = useRef(0);
   const readyRef = useRef({ active, busy: false });
   readyRef.current = { active, busy: runningRef.current };
 
@@ -195,13 +203,16 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
 
   const goLocal = useCallback(async (path: string, quiet = false) => {
     beat.current?.();
+    const seq = (localSeq.current += 1);
     try {
       const listing = await invoke<FsListing>("local_list", { path });
+      if (seq !== localSeq.current) return;
       setLocal(listing);
       rememberDir("local", listing.path);
       setSel((s) => ({ ...s, local: [] }));
       setErr(null);
     } catch (e) {
+      if (seq !== localSeq.current) return;
       if (quiet) { void goLocal(""); return; }
       fail(e);
     }
@@ -210,14 +221,17 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
   const goRemote = useCallback(async (path: string, quiet = false) => {
     if (!sessionId) return;
     beat.current?.();
+    const seq = (remoteSeq.current += 1);
     try {
       const listing = await invoke<FsListing>("sftp_list", { sessionId, path });
+      if (seq !== remoteSeq.current) return;
       setRemote(listing);
       setRemoteHome((home) => home || listing.path);
       rememberDir(connId, listing.path);
       setSel((s) => ({ ...s, remote: [] }));
       setErr(null);
     } catch (e) {
+      if (seq !== remoteSeq.current) return;
       if (quiet) { void goRemote(""); return; }
       fail(e);
     }
@@ -233,14 +247,16 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
   // 每个文件各自的传输进度（可能好几条同时在跑）
   useEffect(() => {
     let un: UnlistenFn | undefined;
+    let dead = false;
     listen<Progress & { sessionId: string }>("sftp://progress", (event) => {
       const p = event.payload;
       if (p.sessionId !== sessionId) return;
       beat.current?.();
+      // 这条传完了，它的字节数并进累计里，速度才不会在换文件时掉一下。
+      // 放在 setState 的 updater 外面：updater 得是纯函数，StrictMode 会调两遍
+      if (p.finished) finishedBytes.current += p.done;
       setProgress((old) => {
         if (p.finished) {
-          // 这条传完了，它的字节数并进累计里，速度才不会在换文件时掉一下
-          finishedBytes.current += p.done;
           if (!old[p.taskId]) return old;
           const next = { ...old };
           delete next[p.taskId];
@@ -248,8 +264,11 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         }
         return { ...old, [p.taskId]: { name: p.name, done: p.done, total: p.total, direction: p.direction } };
       });
-    }).then((fn) => (un = fn));
-    return () => un?.();
+    }).then((fn) => {
+      if (dead) fn();
+      else un = fn;
+    });
+    return () => { dead = true; un?.(); };
   }, [sessionId]);
 
   // —— 速度和剩余时间 ——
@@ -287,10 +306,13 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
     return () => clearInterval(timer);
   }, [progress]);
 
+  // 读 ref 而不是 state：传输结束时刷新的得是"现在"待的目录，不是传输开始时那个
   const refresh = useCallback((side: Side) => {
-    if (side === "local") { if (local) void goLocal(local.path); }
-    else if (remote) void goRemote(remote.path);
-  }, [local, remote, goLocal, goRemote]);
+    if (side === "local") { if (localPathRef.current) void goLocal(localPathRef.current); }
+    else if (remotePathRef.current) void goRemote(remotePathRef.current);
+  }, [goLocal, goRemote]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   // 编辑器存完文件 → 就在当前目录的话刷新一下
   useEffect(() => {
@@ -316,6 +338,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
 
   /** 跑一条任务；目录任务顺带处理「已经在了」的情况 */
   const runTask = useCallback(async (task: XferTask) => {
+    const sessionId = sessionIdRef.current;
     patch(task.id, { status: "run" });
     beat.current?.();
     try {
@@ -352,7 +375,9 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
         return next;
       });
     }
-  }, [sessionId]);
+  }, []);
+  const runTaskRef = useRef(runTask);
+  runTaskRef.current = runTask;
 
   /**
    * 队列泵：文件可以几条一起传（小文件多的目录靠这个提速），
@@ -374,7 +399,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
 
         const head = waiting[0];
         if (head.kind === "mkdir") {
-          await runTask(head);
+          await runTaskRef.current(head);
           continue;
         }
         // 从队头连着取一批文件，撞上目录任务就先停在那儿
@@ -383,21 +408,21 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
           if (one.kind !== "file" || batch.length >= Math.max(1, laneRef.current)) break;
           batch.push(one);
         }
-        await Promise.all(batch.map(runTask));
+        await Promise.all(batch.map((one) => runTaskRef.current(one)));
       }
     } finally {
       runningRef.current = false;
       cancelRef.current = false;
       setProgress({});
-      refresh("local");
-      refresh("remote");
+      refreshRef.current("local");
+      refreshRef.current("remote");
     }
-  }, [runTask, refresh]);
+  }, []);
 
   /** 真正下队：到这一步该问的都问过了 */
   const push = (tasks: XferTask[]) => {
     if (tasks.length === 0) return;
-    if (!sessionId) { setErr({ message: "连接断了，重连之后再传" }); return; }
+    if (!sessionIdRef.current) { setErr({ message: "连接断了，重连之后再传" }); return; }
     listRef.current.push(...tasks);
     sync();
     setQueueOpen(true);
@@ -411,11 +436,14 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
    */
   const enqueue = async (tasks: XferTask[]) => {
     if (tasks.length === 0) return;
+    const sessionId = sessionIdRef.current;
     if (!sessionId) { setErr({ message: "连接断了，重连之后再传" }); return; }
     const hits = await findConflicts(tasks, sessionId);
     if (hits.length === 0) { push(tasks); return; }
     setClash({ tasks, hits });
   };
+  const enqueueRef = useRef(enqueue);
+  enqueueRef.current = enqueue;
 
   /** 取消：排队的丢掉，正在传的也叫停（引擎会把半截文件收干净） */
   const cancelQueue = () => {
@@ -618,6 +646,7 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
   // 从系统拖文件（或整个目录）进右栏 = 上传到远程当前目录
   useEffect(() => {
     let un: UnlistenFn | undefined;
+    let dead = false;
     getCurrentWebview()
       .onDragDropEvent((event) => {
         const host = remotePaneRef.current;
@@ -634,19 +663,31 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
           setDropping(null);
           if (!inside) return;
           if (!dir) { setErr({ message: "连接不在了，重连后再拖" }); return; }
-          planDroppedPaths(p.paths ?? [], dir).then(enqueue).catch(fail);
+          planDroppedPaths(p.paths ?? [], dir).then((tasks) => enqueueRef.current(tasks)).catch(fail);
           return;
         }
         setDropping(inside ? (dir ? "ok" : "busy") : null);
       })
-      .then((fn) => (un = fn))
+      .then((fn) => {
+        if (dead) fn();
+        else un = fn;
+      })
       .catch(() => {});
-    return () => un?.();
-    // enqueue 每次渲染都新建，但它只用 ref，稳定
+    return () => { dead = true; un?.(); };
+    // 监听只挂一次；enqueue 每次渲染都新建，所以经 enqueueRef 取最新的那个
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // —— 单项操作 ——
+  /** 新建 / 改名用的名字：带路径分隔符或 `..` 的不收，不然 `../x` 会把东西挪到上级去 */
+  const badName = (name: string): string | null => {
+    const one = name.trim();
+    if (!one) return "名字不能空着";
+    if (one === "." || one === "..") return "这个名字不能用";
+    if (/[\\/]/.test(one)) return "名字里不能带 / 或 \\";
+    return null;
+  };
+
   const mkdir = (side: Side) => {
     const listing = side === "local" ? local : remote;
     if (!listing) return;
@@ -656,6 +697,8 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       input: { label: "目录名", placeholder: "new-folder" },
       confirmText: "建",
       onConfirm: async (name) => {
+        const why = badName(name);
+        if (why) { setErr({ message: why }); return; }
         try {
           if (side === "local") await invoke("local_mkdir", { path: await invoke<string>("local_join", { dir: listing.path, name }) });
           else await invoke("sftp_mkdir", { sessionId, path: joinRemote(listing.path, name) });
@@ -674,6 +717,8 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       input: { label: "文件名", placeholder: "notes.conf" },
       confirmText: "建",
       onConfirm: async (name) => {
+        const why = badName(name);
+        if (why) { setErr({ message: why }); return; }
         try {
           let path: string;
           if (side === "local") {
@@ -700,6 +745,8 @@ export function SftpPanel({ sessionId, connId, active, lanes, onActivity, onEdit
       confirmText: "改",
       onConfirm: async (name) => {
         if (name === entry.name) return;
+        const why = badName(name);
+        if (why) { setErr({ message: why }); return; }
         try {
           if (side === "local") {
             const to = await invoke<string>("local_join", { dir: listing.path, name });
@@ -1316,12 +1363,15 @@ function FilePane(props: FilePaneProps) {
 
   // 去过的路径，供「后退」和下拉里的「最近」
   const history = useRef<string[]>([]);
-  const skipPush = useRef(false);
+  /** 正在「后退」去的那个路径：到了再出栈，没到（目标目录已经没了）历史就不动 */
+  const goingBack = useRef<string | null>(null);
   const path = listing?.path;
   useEffect(() => {
     if (!path) return;
-    if (skipPush.current) { skipPush.current = false; return; }
     const list = history.current;
+    const arrived = goingBack.current === path;
+    goingBack.current = null;
+    if (arrived) { list.pop(); return; }
     if (list[list.length - 1] !== path) list.push(path);
     if (list.length > 40) list.shift();
   }, [path]);
@@ -1329,9 +1379,9 @@ function FilePane(props: FilePaneProps) {
   const back = () => {
     const list = history.current;
     if (list.length < 2) return;
-    list.pop();
-    skipPush.current = true;
-    props.onGo(list[list.length - 1]);
+    const target = list[list.length - 2];
+    goingBack.current = target;
+    props.onGo(target);
   };
 
   const entries = useMemo(() => {
@@ -1484,10 +1534,15 @@ function FilePane(props: FilePaneProps) {
         } else {
           props.onSelect([list[clamped].path]);
         }
-        // 走出可视范围就把它滚回来
-        listBoxRef.current
-          ?.querySelector(`[data-path="${CSS.escape(list[clamped].path)}"]`)
-          ?.scrollIntoView({ block: "nearest" });
+        // 走出可视范围就把它滚回来。长目录只渲染看得见的那几行，End / PageDown 的目标行
+        // 多半还不在 DOM 里，靠 querySelector 找不到；行高固定，直接按几何算位置
+        const box = listBoxRef.current;
+        if (box) {
+          const offset = box.querySelector<HTMLElement>(".fs-row.up")?.offsetHeight ?? 0;
+          const top = offset + clamped * ROW_H;
+          if (top < box.scrollTop) box.scrollTo({ top });
+          else if (top + ROW_H > box.scrollTop + box.clientHeight) box.scrollTo({ top: top + ROW_H - box.clientHeight });
+        }
       };
 
       if (e.key === "ArrowDown") { e.preventDefault(); goTo(at < 0 ? 0 : at + 1, e.shiftKey); return; }
@@ -1547,7 +1602,7 @@ function FilePane(props: FilePaneProps) {
               onBlur={() => setTyping(null)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setTyping(null);
-                if (e.key === "Enter") { props.onGo(typing); setTyping(null); }
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) { props.onGo(typing); setTyping(null); }
               }}
             />
           )}

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use data_encoding::BASE64_MIME;
 use hmac::{Hmac, Mac};
 use russh::keys::key::PublicKey;
+use russh::keys::PublicKeyBase64;
 use sha1::Sha1;
 
 use crate::ssh::SshError;
@@ -48,6 +49,9 @@ pub(crate) fn host_pattern(host: &str, port: u16) -> String {
 struct HostLine<'a> {
     /// 逗号分隔的主机模式列表，或者 `|1|salt|hash`
     patterns: &'a str,
+    /// 算法名（ssh-ed25519 / ssh-rsa …）和 base64 的公钥
+    algo: &'a str,
+    key: &'a str,
 }
 
 /// 拆一行：跳过空行、注释，认得 `@cert-authority` / `@revoked` 前缀
@@ -63,9 +67,9 @@ fn parse_line(raw: &str) -> Option<HostLine<'_>> {
         first = fields.next()?;
     }
     // 至少还要有算法和公钥两段，否则这行不是一条主机记录
-    fields.next()?;
-    fields.next()?;
-    Some(HostLine { patterns: first })
+    let algo = fields.next()?;
+    let key = fields.next()?;
+    Some(HostLine { patterns: first, algo, key })
 }
 
 /// OpenSSH 的通配匹配：`*` 任意长，`?` 单个字符
@@ -117,24 +121,26 @@ fn hashed_match(entry: &str, host_port: &str) -> bool {
 
 /// 这一行的主机模式认不认 `host_port`（`!pattern` 否定优先，跟 OpenSSH 一致）
 fn matches_host(patterns: &str, host_port: &str) -> bool {
+    // 主机名不分大小写（OpenSSH 查表前会把名字小写化；哈希条目也是按小写算的）
+    let host_port = host_port.to_ascii_lowercase();
     let mut hit = false;
     for entry in patterns.split(',') {
         if entry.is_empty() {
             continue;
         }
         if let Some(negated) = entry.strip_prefix('!') {
-            if glob_match(negated, host_port) {
+            if glob_match(&negated.to_ascii_lowercase(), &host_port) {
                 return false;
             }
             continue;
         }
         if entry.starts_with("|1|") {
-            if hashed_match(entry, host_port) {
+            if hashed_match(entry, &host_port) {
                 hit = true;
             }
             continue;
         }
-        if glob_match(entry, host_port) {
+        if glob_match(&entry.to_ascii_lowercase(), &host_port) {
             hit = true;
         }
     }
@@ -144,17 +150,47 @@ fn matches_host(patterns: &str, host_port: &str) -> bool {
 pub fn verify(host: &str, port: u16, key: &PublicKey) -> HostVerdict {
     let algo = key.name().to_string();
     let fingerprint = fingerprint_of(key);
+    let host = host.to_ascii_lowercase();
     let Some(path) = known_hosts_file() else {
         return HostVerdict::Unknown { algo, fingerprint };
     };
+    if !path.exists() {
+        return HostVerdict::Unknown { algo, fingerprint };
+    }
 
-    match russh::keys::check_known_hosts_path(host, port, key, &path) {
+    match russh::keys::check_known_hosts_path(&host, port, key, &path) {
         Ok(true) => HostVerdict::Known,
         Ok(false) => HostVerdict::Unknown { algo, fingerprint },
-        // KeyChanged 之外的错（文件不存在之类）都当没见过处理
         Err(russh::keys::Error::KeyChanged { .. }) => HostVerdict::Changed { algo, fingerprint },
-        Err(_) => HostVerdict::Unknown { algo, fingerprint },
+        // 别的错多半是文件里有 russh 认不得的行（ssh-dss、sk-* 硬件密钥、非 UTF-8）——
+        // 它遇到一行解析不了就整个放弃。这时不能当「没见过」静静记一条：那等于
+        // 指纹校验失效，而且 auto 策略下每次连接都会往文件里追加一行。退回自己逐行比对。
+        Err(_) => scan_lines(&path, &host, port, key).unwrap_or(HostVerdict::Unknown { algo, fingerprint }),
     }
+}
+
+/// russh 解析不了整个文件时的兜底：只看命中这台主机的行，按算法 + 公钥原文比对
+fn scan_lines(path: &Path, host: &str, port: u16, key: &PublicKey) -> Option<HostVerdict> {
+    let raw = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    let target = host_pattern(host, port);
+    let want_algo = key.name();
+    let want_key = key.public_key_base64();
+    let mut same_algo = false;
+    for line in text.split('\n').filter_map(parse_line) {
+        if !matches_host(line.patterns, &target) {
+            continue;
+        }
+        if line.algo == want_algo {
+            if line.key == want_key {
+                return Some(HostVerdict::Known);
+            }
+            same_algo = true;
+        }
+    }
+    let algo = want_algo.to_string();
+    let fingerprint = fingerprint_of(key);
+    Some(if same_algo { HostVerdict::Changed { algo, fingerprint } } else { HostVerdict::Unknown { algo, fingerprint } })
 }
 
 /// 指纹的标准写法，跟 `ssh-keygen -lf` 一致
@@ -164,6 +200,8 @@ pub(crate) fn fingerprint_of(key: &PublicKey) -> String {
 
 /// 用户点了「信任」→ 写进 known_hosts；指纹变了的情况先把旧记录删掉
 pub fn trust(host: &str, port: u16, key: &PublicKey, replace: bool) -> Result<(), SshError> {
+    // 跟 OpenSSH 一样按小写记，别处 ssh 过的机器这里才认得出是同一台
+    let host = &host.to_ascii_lowercase();
     let path = known_hosts_file().ok_or_else(|| SshError::plain("找不到用户目录，写不了 known_hosts"))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| SshError::new("建不了 .ssh 目录", e))?;
@@ -209,7 +247,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), SshError> {
 }
 
 /// 忘掉某台主机的指纹记录
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_forget(host: String, port: u16) -> Result<(), SshError> {
     let path = known_hosts_file().ok_or_else(|| SshError::plain("找不到用户目录"))?;
     if !path.exists() {
@@ -229,6 +267,38 @@ mod tests {
         assert!(matches_host("[example.com]:2222", "[example.com]:2222"));
         // 换个端口就是另一条记录，不该被牵连删掉
         assert!(!matches_host("[example.com]:2222", "example.com"));
+    }
+
+    #[test]
+    fn host_names_ignore_case() {
+        assert!(matches_host("example.com", "Example.COM"));
+        assert!(matches_host("Example.com", "example.com"));
+        assert!(matches_host("*.Example.com", "a.example.COM"));
+    }
+
+    /// russh 整文件解析失败时的兜底扫描：同算法同公钥算认识，同算法不同公钥算变了
+    #[test]
+    fn scan_lines_tells_known_changed_unknown_apart() {
+        use russh::keys::key::KeyPair;
+        let pair = KeyPair::generate_ed25519().unwrap();
+        let key = pair.clone_public_key().unwrap();
+        let other = KeyPair::generate_ed25519().unwrap().clone_public_key().unwrap();
+        let dir = std::env::temp_dir().join("az-term-hosts-scan-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known_hosts");
+        std::fs::write(
+            &path,
+            format!(
+                "known.example ssh-ed25519 {}\nchanged.example ssh-ed25519 {}\n# 一行 russh 不认的\nweird.example ssh-dss AAAA\n",
+                key.public_key_base64(),
+                other.public_key_base64()
+            ),
+        )
+        .unwrap();
+        assert!(matches!(scan_lines(&path, "known.example", 22, &key), Some(HostVerdict::Known)));
+        assert!(matches!(scan_lines(&path, "changed.example", 22, &key), Some(HostVerdict::Changed { .. })));
+        assert!(matches!(scan_lines(&path, "nobody.example", 22, &key), Some(HostVerdict::Unknown { .. })));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

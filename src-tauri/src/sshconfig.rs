@@ -150,7 +150,7 @@ fn read_into(path: &Path, out: &mut Vec<ConfigHost>, seen: &mut HashSet<PathBuf>
 }
 
 /// 把 `~/.ssh/config` 里的服务器读出来
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ssh_config_hosts() -> Result<Vec<ConfigHost>, SshError> {
     let path = ssh_dir()
         .map(|dir| dir.join("config"))

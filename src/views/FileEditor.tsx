@@ -21,6 +21,8 @@ interface TextFile {
   lossy: boolean;
   /** 原来的换行风格，存回去照原样 */
   newline: "lf" | "crlf";
+  /** 文件开头有 BOM，存回去要补上 */
+  bom?: boolean;
 }
 
 interface FileEditorProps {
@@ -115,7 +117,11 @@ export function FileEditor({ side, path, sessionId, defaultEncoding, onDirtyChan
     void load(next);
   };
 
+  // 正在存的时候再按 Ctrl+S 不能再发一次：两次并发写，第一次改了 mtime，
+  // 第二次的 expectMtime 对不上就会误报「被别人改过」
+  const saving = useRef(false);
   const save = useCallback(async (force = false) => {
+    if (saving.current) return;
     if (!loaded) {
       setErr({ message: "这个文件没读进来过，不能保存 —— 存下去等于把原文清空" });
       return;
@@ -124,6 +130,7 @@ export function FileEditor({ side, path, sessionId, defaultEncoding, onDirtyChan
       setErr({ message: "连接不在了，回那个会话标签重连再存" });
       return;
     }
+    saving.current = true;
     setState("saving");
     setErr(null);
     try {
@@ -136,6 +143,7 @@ export function FileEditor({ side, path, sessionId, defaultEncoding, onDirtyChan
         newline: meta?.newline ?? null,
         expectMtime: meta?.mtime ?? null,
         force,
+        bom: meta?.bom ?? false,
       };
       const mtime =
         side === "local"
@@ -152,9 +160,10 @@ export function FileEditor({ side, path, sessionId, defaultEncoding, onDirtyChan
       if (detail.startsWith("stale:")) { setAsk({ kind: "stale" }); return; }
       fail(e);
     } finally {
+      saving.current = false;
       setState("ready");
     }
-  }, [side, sessionId, path, text, loaded, meta?.encoding, meta?.newline, meta?.mtime]);
+  }, [side, sessionId, path, text, loaded, meta?.encoding, meta?.newline, meta?.mtime, meta?.bom]);
 
   const chmod = async (mode: number) => {
     if (!sessionId) return;

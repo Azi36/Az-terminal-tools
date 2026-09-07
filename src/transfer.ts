@@ -81,6 +81,15 @@ export const joinLocal = (dir: string, name: string) =>
 
 export const joinRemote = (dir: string, name: string) => (dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`);
 
+/**
+ * 远程文件名落到本地时先洗一遍：`\` 和 `/` 是路径分隔符，`..` 会往上跳，
+ * 剩下几个是 Windows 不让用的字符。名字来自服务器，不能信。
+ */
+export const localName = (name: string) => {
+  const cleaned = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/[. ]+$/, "");
+  return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
+};
+
 let seq = 0;
 const nextId = () => `x${(seq += 1)}`;
 
@@ -113,7 +122,7 @@ export async function planDownload(entries: FsEntry[], localDir: string, session
 
   const walk = async (entry: FsEntry, targetDir: string) => {
     if (entry.kind === "dir") {
-      const to = joinLocal(targetDir, entry.name);
+      const to = joinLocal(targetDir, localName(entry.name));
       tasks.push({ id: nextId(), kind: "mkdir", dir: "down", from: entry.path, to, name: entry.name, size: 0, mtime: entry.mtime, status: "wait" });
       const listing = await invoke<FsListing>("sftp_list", { sessionId, path: entry.path });
       for (const child of listing.entries) await walk(child, to);
@@ -121,7 +130,7 @@ export async function planDownload(entries: FsEntry[], localDir: string, session
     }
     tasks.push({
       id: nextId(), kind: "file", dir: "down",
-      from: entry.path, to: joinLocal(targetDir, entry.name),
+      from: entry.path, to: joinLocal(targetDir, localName(entry.name)),
       name: entry.name, size: entry.size, mtime: entry.mtime, status: "wait",
     });
   };

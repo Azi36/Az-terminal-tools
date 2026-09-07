@@ -58,6 +58,8 @@ pub struct TextFile {
     pub lossy: bool,
     /// 原来的换行是 "crlf" 还是 "lf"，存回去照原样
     pub newline: &'static str,
+    /// 文件开头有 BOM，存回去要补上
+    pub bom: bool,
 }
 
 /// 这个文件本来用哪种换行。
@@ -82,13 +84,17 @@ pub(crate) const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 字节 → 文本。二进制照样拦下来；编码不对不再一口回绝，
 /// 而是照着用户选的那种解，解不干净就标个 lossy 让他换一种再看。
-pub(crate) fn to_text(bytes: Vec<u8>, label: Option<&str>) -> Result<(String, String, bool), SshError> {
+pub(crate) fn to_text(bytes: Vec<u8>, label: Option<&str>) -> Result<crate::encoding::Decoded, SshError> {
     if bytes.contains(&0) {
         return Err(SshError::plain("这是个二进制文件，编辑器不碰它"));
     }
-    let encoding = crate::encoding::resolve(label);
-    let (text, lossy) = crate::encoding::decode(&bytes, encoding);
-    Ok((text, crate::encoding::name_of(encoding), lossy))
+    Ok(crate::encoding::decode(&bytes, crate::encoding::resolve(label)))
+}
+
+/// 编辑器保存时把文本按读入时的换行、编码、BOM 还原成字节
+pub(crate) fn to_bytes(content: &str, encoding: Option<&str>, newline: Option<&str>, bom: bool) -> Result<Vec<u8>, SshError> {
+    let text = restore_newlines(content, newline);
+    crate::encoding::encode(&text, crate::encoding::resolve(encoding), bom).map_err(|m| SshError::plain(&m))
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -239,8 +245,19 @@ pub async fn sftp_list(
                 mode: meta.permissions.map(|p| p & 0o7777),
             }
         })
-        .filter(|e| e.name != "." && e.name != "..")
+        // 名字里带 "/" 或 NUL 的项不是合法的目录项（服务器要么坏了要么不怀好意），
+        // 直接不列出来 —— 它们拼进本地路径就可能跳出目标目录。
+        .filter(|e| e.name != "." && e.name != ".." && !e.name.contains('/') && !e.name.contains('\0'))
         .collect();
+    // READDIR 给的是 lstat 属性，软链接一律是 "link"。现代发行版上 /bin /lib 都是指向
+    // 目录的软链，不跟一次 stat 的话双击进不去、下载也当文件处理。软链通常没几个，多一次往返无妨。
+    for entry in entries.iter_mut().filter(|e| e.kind == "link") {
+        if let Ok(meta) = sftp.metadata(entry.path.clone()).await {
+            if meta.is_dir() {
+                entry.kind = "dir";
+            }
+        }
+    }
     sort_entries(&mut entries);
 
     Ok(Listing { parent: parent_remote(&canonical), path: canonical, entries })
@@ -488,16 +505,17 @@ pub async fn sftp_read_text(
         .await
         .map_err(|e| SshError::new("打不开这个文件，可能没权限", e))?;
 
-    let (content, used, lossy) = to_text(bytes, encoding.as_deref())?;
+    let decoded = to_text(bytes, encoding.as_deref())?;
     Ok(TextFile {
         name: file_name_of(&path),
-        newline: newline_of(&content),
-        content,
+        newline: newline_of(&decoded.text),
         size,
         mode: meta.permissions.map(|p| p & 0o7777),
         mtime: meta.mtime.unwrap_or(0) as u64,
-        encoding: used,
-        lossy,
+        encoding: crate::encoding::name_of(decoded.used),
+        lossy: decoded.lossy,
+        bom: decoded.bom,
+        content: decoded.text,
         path,
     })
 }
@@ -525,6 +543,7 @@ pub async fn sftp_write_text(
     newline: Option<String>,
     expect_mtime: Option<u64>,
     force: Option<bool>,
+    bom: Option<bool>,
 ) -> Result<u64, SshError> {
     let sftp = session_of(&state, &ssh, &session_id).await?;
 
@@ -537,14 +556,25 @@ pub async fn sftp_write_text(
         }
     }
 
-    // 按读进来时那种编码、那种换行存回去
-    let text = restore_newlines(&content, newline.as_deref());
-    let bytes = crate::encoding::encode(&text, crate::encoding::resolve(encoding.as_deref()));
+    // 按读进来时那种编码、那种换行、有没有 BOM 存回去
+    let bytes = to_bytes(&content, encoding.as_deref(), newline.as_deref(), bom.unwrap_or(false))?;
     let wrote = bytes.len() as u64;
 
-    sftp.write(path.clone(), &bytes)
-        .await
-        .map_err(|e| SshError::new("写不回去，多半是没有写权限", e))?;
+    // 不能用 `sftp.write()`：它只带 WRITE 标志，不 TRUNCATE，内容变短时旧文件的尾巴
+    // 会原样留在服务器上。这里自己开句柄：WRITE | TRUNCATE，不带 CREATE，
+    // 保持"文件不在就报错"的语义。写完 flush 一次，把服务器端的写失败真正接住。
+    {
+        use russh_sftp::protocol::OpenFlags;
+        let mut file = sftp
+            .open_with_flags(path.clone(), OpenFlags::WRITE | OpenFlags::TRUNCATE)
+            .await
+            .map_err(|e| SshError::new("写不回去，多半是没有写权限", e))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| SshError::new("写到一半出错了", e))?;
+        file.flush().await.map_err(|e| SshError::new("写到一半出错了", e))?;
+        file.shutdown().await.map_err(|e| SshError::new("写完没能正常关掉文件", e))?;
+    }
 
     let after = sftp.metadata(path).await.ok();
     if let Some(size) = after.as_ref().and_then(|m| m.size) {
@@ -569,9 +599,15 @@ pub async fn sftp_touch(
     if sftp.try_exists(path.clone()).await.unwrap_or(false) {
         return Err(SshError::plain("同名的已经在了"));
     }
-    sftp.write(path, b"")
+    // WRITE | CREATE | EXCLUDE：不存在就建，中间被人抢先建了就让服务器拒绝。
+    // `sftp.write()` 不带 CREATE，对不存在的路径永远失败，不能用。
+    use russh_sftp::protocol::OpenFlags;
+    let mut file = sftp
+        .open_with_flags(path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE)
         .await
-        .map_err(|e| SshError::new("建不了文件，可能没写权限", e))
+        .map_err(|e| SshError::new("建不了文件，可能没写权限", e))?;
+    file.shutdown().await.ok();
+    Ok(())
 }
 
 /// 改远程文件权限（chmod）。只动低 12 位，文件类型位原样保留。

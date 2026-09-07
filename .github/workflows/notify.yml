@@ -13,6 +13,9 @@ on:
 
 jobs:
   notify:
+    # 预发布版不通知：更新器只认 releases/latest，GitHub 的 latest 不含 prerelease，
+    # 提示了也下不到，用户点「检查更新」还会被告知「已经是最新」
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,7 +42,8 @@ jobs:
           jq -n --arg v "$VERSION" --arg n "$NOTES" \
                 --arg u "https://github.com/$REPO/releases/tag/$TAG" \
                 '{version:$v, notes:$n, url:$u}' \
-            | curl -fsS -X POST "https://api.azi36.com/release/az-term" \
+            | curl -fsS --retry 5 --retry-all-errors --retry-delay 3 \
+                -X POST "https://api.azi36.com/release/az-term" \
                 -H "X-Azi-Key: $RELEASE_KEY" \
                 -H "content-type: application/json" \
                 --data-binary @-

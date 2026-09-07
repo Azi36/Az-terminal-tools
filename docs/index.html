@@ -311,6 +311,23 @@
       .trust > div + div { border-top: 1px solid var(--border-light); }
     }
 
+    /* 页头的仓库链接：样式照抄主站 .nav-gh，但不叫那个名 —— site.js 会把 .nav-gh 当彩蛋接管，点了不跳转 */
+    .nav-repo {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--text-2);
+      transition: color .2s, background .2s;
+    }
+    .nav-repo:hover { color: var(--text); background: var(--bg-hover); }
+    .nav-repo img { width: 26px; height: 26px; border-radius: 50%; display: block; }
+    @media (max-width: 430px) {
+      .nav-repo { width: 28px; height: 28px; }
+      .nav-repo img { width: 22px; height: 22px; }
+    }
+
   </style>
 </head>
 <body>
@@ -344,7 +361,8 @@
           <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
           <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
         </button>
-        <a class="nav-gh" href="https://github.com/Azi36/Az-terminal-tools" aria-label="GitHub"><img src="assets/img/avatar.png" alt="Azi36"></a>
+        <!-- 不能用 .nav-gh：site.js 会把那个类当站长头像的彩蛋接管，preventDefault 一律不跳转 -->
+        <a class="nav-repo" href="https://github.com/Azi36/Az-terminal-tools" aria-label="GitHub 仓库" title="GitHub 仓库"><img src="assets/img/avatar.png" alt="Azi36"></a>
       </div>
     </div>
   </header>
@@ -371,7 +389,7 @@
             <span><b>看源码</b><small>MIT · 自己也能构建</small></span>
           </a>
         </div>
-        <p class="dl-note" id="verLine">第一个版本正在准备，发布后这里显示版本号</p>
+        <p class="dl-note" id="verLine">最新版本见 GitHub Releases</p>
       </div>
 
       <div class="hero-visual">

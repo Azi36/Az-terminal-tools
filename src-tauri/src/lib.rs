@@ -35,10 +35,12 @@ pub fn run() {
             let _ = app;
             Ok(())
         })
-        // 关窗即断开所有 SSH，不把连接留在那儿占着
+        // 窗口真没了才断开所有 SSH，不把连接留在那儿占着。
+        // 只认 Destroyed：CloseRequested 时前端可能还要拦一句"还有会话连着"，
+        // 用户点了"算了"窗口还在，这时会话不能已经被掐掉。
         .on_window_event(|window, event| {
             use tauri::Manager;
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = window.app_handle().state::<ssh::SshState>().inner().clone();
                 tauri::async_runtime::block_on(state.close_all());
             }

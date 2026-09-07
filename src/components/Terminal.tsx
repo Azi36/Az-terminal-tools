@@ -54,7 +54,9 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     const text = await pasteText();
     if (!text) return;
     activity.current?.();
-    invoke("ssh_write", { sessionId, data: text }).catch(() => {});
+    // 经 xterm 走而不是直接 ssh_write：远端开了 bracketed paste（vim / zsh 默认）时
+    // 它会包上 \e[200~ … \e[201~，多行粘贴才不会被逐行执行、在 vim 里缩进错乱
+    termRef.current?.paste(text);
   };
 
   /**
@@ -118,8 +120,14 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     // 终端里 Ctrl+C 是中断、Ctrl+F 是 vim 翻页 / less 前进 / bash 右移光标，
     // 这些都得原样交给服务器。我们自己的功能一律加 Shift，不抢终端的键。
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey) return true;
+      if (e.type !== "keydown" || !e.ctrlKey) return true;
       const key = e.key.toLowerCase();
+      // 应用级快捷键（App.tsx 在 window 上监听）：Ctrl+Tab 换标签、Ctrl+T 新建、Ctrl+1..9 跳标签。
+      // 不能交给 xterm —— 它会把这些当成 HT / ^T / 控制字符发给服务器，还 stopPropagation，
+      // window 就收不到了。返回 false 只是让 xterm 不处理，事件照常冒泡。
+      // Ctrl+W 故意不拦：bash 里那是删一个词，比关标签常用得多（跟 Windows Terminal 一个规矩）。
+      if (!e.altKey && !e.metaKey && (e.key === "Tab" || (!e.shiftKey && (key === "t" || /^[1-9]$/.test(e.key))))) return false;
+      if (!e.shiftKey) return true;
       if (key === "c") {
         const picked = term.getSelection();
         // 没选中东西时别把这个键吞了，让它照常当中断用
@@ -149,10 +157,15 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     // 字节 → 文本在 Rust 侧按会话编码解好了（解码器跨包保持状态，
     // 一个汉字被拆在两个包里也不会吐问号），这边拿到的直接是文本。
     let unlisten: UnlistenFn | undefined;
+    let dead = false;
     listen<string>(`ssh://data/${sessionId}`, (event) => {
       activity.current?.();
       term.write(event.payload);
-    }).then((fn) => (unlisten = fn));
+    }).then((fn) => {
+      // 监听挂好之前终端就卸了（StrictMode 必现）：不能让它留着往已经 dispose 的 term 里写
+      if (dead) fn();
+      else unlisten = fn;
+    });
 
     // 窗口尺寸变化 → 同步 PTY（切到别的页时宽高为 0，别去 fit，会把终端算崩）
     const syncSize = () => {
@@ -173,6 +186,7 @@ export function Terminal({ sessionId, scheme, variant, fontSize, divider, onActi
     term.focus();
 
     return () => {
+      dead = true;
       onData.dispose();
       unlisten?.();
       observer.disconnect();

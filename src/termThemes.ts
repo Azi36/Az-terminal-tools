@@ -141,4 +141,8 @@ export const FONT_SIZES = [12, 13, 14, 16];
 export const schemeOf = (id: string): TermScheme => TERM_SCHEMES.find((one) => one.id === id) ?? TERM_SCHEMES[0];
 
 /** 取实际要用的那份色板：variant 已经是 dark / light 具体值 */
-export const themeOf = (id: string, variant: "dark" | "light"): ITheme => schemeOf(id)[variant];
+export const themeOf = (id: string, variant: "dark" | "light"): ITheme => {
+  const scheme = schemeOf(id);
+  // variant 来路不明时兜到深色，别让终端页整个抛错
+  return scheme[variant] ?? scheme.dark;
+};

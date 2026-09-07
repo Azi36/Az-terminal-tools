@@ -18,6 +18,9 @@ export function NoteView({ note, onChange, onDelete }: NoteViewProps) {
   const [body, setBody] = useState(note.body);
   const [savedAt, setSavedAt] = useState(note.updatedAt);
   const first = useRef(true);
+  // 最新内容和「计时器还没到点」的标记放 ref 里，卸载时才拿得到
+  const latest = useRef({ note, onChange, title, body, pending: false });
+  latest.current = { ...latest.current, note, onChange, title, body };
 
   // 停手 500ms 落盘
   useEffect(() => {
@@ -25,8 +28,10 @@ export function NoteView({ note, onChange, onDelete }: NoteViewProps) {
       first.current = false;
       return;
     }
+    latest.current.pending = true;
     const timer = setTimeout(() => {
       const now = Date.now();
+      latest.current.pending = false;
       onChange({ ...note, title, body, updatedAt: now });
       setSavedAt(now);
     }, 500);
@@ -34,6 +39,12 @@ export function NoteView({ note, onChange, onDelete }: NoteViewProps) {
     // note / onChange 变动不该重开计时器，只跟着内容走
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, body]);
+
+  // 关标签、切到别条备忘（key 换了会重挂）时计时器还没到点的那段输入直接落盘，别丢
+  useEffect(() => () => {
+    const { note: last, onChange: tell, title: t, body: b, pending } = latest.current;
+    if (pending) tell({ ...last, title: t, body: b, updatedAt: Date.now() });
+  }, []);
 
   return (
     <div className="note-view">

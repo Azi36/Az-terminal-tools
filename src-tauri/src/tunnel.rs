@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use russh::client;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, Mutex};
@@ -83,6 +83,7 @@ fn emit(app: &AppHandle, session_id: &str, id: &str, state: &'static str, active
 }
 
 /// 把一条本地 TCP 连接和一条 SSH 通道对接起来，两头对着倒字节
+#[allow(clippy::too_many_arguments)]
 async fn splice(
     handle: Arc<Mutex<client::Handle<ClientHandler>>>,
     mut tcp: TcpStream,
@@ -90,6 +91,9 @@ async fn splice(
     dest_port: u16,
     mut stop: broadcast::Receiver<()>,
     active: Arc<std::sync::atomic::AtomicUsize>,
+    app: AppHandle,
+    session_id: String,
+    tunnel_id: String,
 ) {
     use std::sync::atomic::Ordering;
     let peer = tcp.peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|_| "127.0.0.1".into());
@@ -104,14 +108,17 @@ async fn splice(
         Err(_) => return,
     };
 
-    active.fetch_add(1, Ordering::Relaxed);
+    // 连接数开一条、断一条都报一声，面板上的数字才不会只在断开时才动
+    let now = active.fetch_add(1, Ordering::Relaxed) + 1;
+    emit(&app, &session_id, &tunnel_id, "conn", now, None);
     let mut stream = channel.into_stream();
     tokio::select! {
         _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream) => {}
         _ = stop.recv() => {}
     }
     let _ = tcp.shutdown().await;
-    active.fetch_sub(1, Ordering::Relaxed);
+    let now = active.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+    emit(&app, &session_id, &tunnel_id, "conn", now, None);
 }
 
 /// SOCKS5 握手：只支持 CONNECT，不做认证（监听在本机，谁能连上谁就已经在这台机器上了）
@@ -201,14 +208,16 @@ pub async fn tunnel_open(
                 spec.dest_port,
             )
             .await;
-            handle
+            let asked = handle
                 .lock()
                 .await
                 .tcpip_forward(spec.listen_host.clone(), spec.listen_port as u32)
-                .await
-                .map_err(|e| {
-                    SshError::new("服务器不让开这个端口（多半是 sshd 没开 GatewayPorts，或者端口被占了）", e)
-                })?;
+                .await;
+            if let Err(e) = asked {
+                // 服务器不肯：刚登记的落点得撤掉，不然它会截胡之后同端口的另一条隧道
+                ssh.drop_remote_forward(&session_id, &spec.listen_host, spec.listen_port as u32).await;
+                return Err(SshError::new("服务器不让开这个端口（多半是 sshd 没开 GatewayPorts，或者端口被占了）", e));
+            }
         }
         "local" | "socks" => {
             let bind = format!("{}:{}", spec.listen_host, spec.listen_port);
@@ -221,23 +230,33 @@ pub async fn tunnel_open(
             let job = spec.clone();
             let sid = session_id.clone();
             let app_ref = app.clone();
+            // stop 的接收端在这儿就订好：spawn 出去的任务还没跑起来时就来了 stop 信号，
+            // 任务里再 subscribe 是收不到的，accept 循环会一直停不下来
+            let mut stop_rx = stop.subscribe();
             tauri::async_runtime::spawn(async move {
-                let mut stop_rx = stop_tx.subscribe();
+                // 连续 accept 失败的次数：ECONNABORTED / 对端 reset 这种一次两次很正常，
+                // 一直失败（描述符耗尽之类）这条隧道就没法再服务了，得明说而不是假活着
+                let mut failures = 0u32;
                 loop {
                     let accepted = tokio::select! {
                         one = listener.accept() => one,
                         _ = stop_rx.recv() => break,
                     };
-                    let Ok((mut tcp, _)) = accepted else { break };
-
-                    // SOCKS 的目标是客户端在握手里说的，本地转发是固定的
-                    let target = if job.kind == "socks" {
-                        match socks_handshake(&mut tcp).await {
-                            Ok(Some(one)) => one,
-                            _ => continue,
+                    let (tcp, _) = match accepted {
+                        Ok(one) => {
+                            failures = 0;
+                            one
                         }
-                    } else {
-                        (job.dest_host.clone(), job.dest_port)
+                        Err(e) => {
+                            failures += 1;
+                            if failures >= 20 {
+                                app_ref.state::<TunnelState>().running.lock().await.remove(&job.id);
+                                emit(&app_ref, &sid, &job.id, "error", 0, Some(format!("本机端口接不了新连接：{e}")));
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
                     };
 
                     let each = handle.clone();
@@ -246,9 +265,21 @@ pub async fn tunnel_open(
                     let ping = app_ref.clone();
                     let ping_sid = sid.clone();
                     let ping_id = job.id.clone();
+                    let kind = job.kind.clone();
+                    let fixed = (job.dest_host.clone(), job.dest_port);
                     tauri::async_runtime::spawn(async move {
-                        splice(each, tcp, target.0, target.1, each_stop, each_count.clone()).await;
-                        emit(&ping, &ping_sid, &ping_id, "conn", each_count.load(std::sync::atomic::Ordering::Relaxed), None);
+                        let mut tcp = tcp;
+                        // SOCKS 的目标是客户端在握手里说的，本地转发是固定的。
+                        // 握手放在每条连接自己的任务里：一个连上不说话的客户端不该堵住后面所有人
+                        let target = if kind == "socks" {
+                            match socks_handshake(&mut tcp).await {
+                                Ok(Some(one)) => one,
+                                _ => return,
+                            }
+                        } else {
+                            fixed
+                        };
+                        splice(each, tcp, target.0, target.1, each_stop, each_count, ping, ping_sid, ping_id).await;
                     });
                 }
             });
@@ -279,6 +310,15 @@ pub async fn tunnel_close(
     let _ = one.stop.send(());
     if one.spec.kind == "remote" {
         ssh.drop_remote_forward(&one.session_id, &one.spec.listen_host, one.spec.listen_port as u32).await;
+        // 让服务器把端口真的撤掉；只删本地登记的话 sshd 那头还监听着，
+        // 这条会话上再开同一个端口会被拒
+        if let Some(handle) = ssh.handle_of(&one.session_id).await {
+            let _ = handle
+                .lock()
+                .await
+                .cancel_tcpip_forward(one.spec.listen_host.clone(), one.spec.listen_port as u32)
+                .await;
+        }
     }
     emit(&app, &one.session_id, &id, "closed", 0, None);
     Ok(())

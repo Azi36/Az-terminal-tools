@@ -113,9 +113,12 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
     lastUsedAt: conn?.lastUsedAt,
   };
 
-  // 必填就一个主机 —— 用户名有默认值，密码可以等连接时再问
+  // 必填就一个主机 —— 用户名有默认值，密码可以等连接时再问。
+  // 端口和私钥路径在这儿就拦：端口 70000 存进去，连接时报的是 invoke 参数错误，看不懂
   const missHost = host.trim() === "";
-  const valid = !missHost;
+  const badPort = !Number.isInteger(port) || port < 1 || port > 65535;
+  const missKey = authType === "key" && keyPath.trim() === "";
+  const valid = !missHost && !badPort && !missKey;
   // 这一页填了密码也算「有没存的东西」，关标签前该拦一下
   const dirty = conn ? !sameConfig(draft, conn) || secret !== "" : valid;
 
@@ -133,7 +136,7 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
   /** 缺东西就在页面里红字指出来并把光标送过去，不弹窗 */
   const save = (connect = false) => {
     setChecked(true);
-    if (missHost) { hostRef.current?.focus(); return; }
+    if (!valid) { if (missHost) hostRef.current?.focus(); return; }
     if (!dirty && !connect) return;
     // 留空的用户名在这儿落成 root，让人看得见存下去的到底是什么
     if (username.trim() !== draft.username) setUsername(draft.username);
@@ -227,7 +230,7 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
         {checked && !valid && (
           <p className="page-warn">
             <IconLock size={13} />
-            主机还空着 —— 填个 IP 或者域名
+            {missHost ? "主机还空着 —— 填个 IP 或者域名" : badPort ? "端口得在 1 到 65535 之间" : "选了密钥登录，私钥文件还没指"}
           </p>
         )}
 
@@ -272,9 +275,10 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
               />
               {checked && missHost && <em className="field-err">这个必填</em>}
             </label>
-            <label className="field">
+            <label className={`field ${checked && badPort ? "bad" : ""}`}>
               <span>端口</span>
               <input type="number" value={port} min={1} max={65535} onChange={(e) => setPort(Number(e.target.value))} />
+              {checked && badPort && <em className="field-err">1 到 65535</em>}
             </label>
             <label className="field span2">
               <span>用户名</span>
@@ -369,6 +373,7 @@ export function ConnectionPage({ conn, status, embedded, onSave, onSecret, onDel
                   />
                   <button className="btn-ghost sm" type="button" onClick={pickKey}>浏览…</button>
                 </div>
+                {checked && missKey && <em className="field-err">这个必填</em>}
                 <em className="field-hint">选私钥（id_ed25519 / id_rsa），不是 .pub 那个公钥文件。</em>
               </label>
             )}

@@ -18,14 +18,21 @@ const KEYS = {
 } as const;
 
 function read<T>(key: string): T[] {
+  let raw: string | null = null;
   try {
-    const raw = localStorage.getItem(key);
+    raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) return parsed;
   } catch {
-    return [];
+    // 下面统一处理
   }
+  // 解析不了（磁盘满写了半截之类）：不能静静返回空 —— 下一次 upsert 会用单条把整份盖掉。
+  // 原文挪到旁边留个底，至少还能手工救回来
+  try {
+    if (raw) localStorage.setItem(`${key}-corrupt-${Date.now()}`, raw);
+  } catch {}
+  return [];
 }
 
 function write<T>(key: string, list: T[]): T[] {
@@ -135,21 +142,49 @@ const DEFAULT_SETTINGS: AppSettings = {
   updateNotice: true,
 };
 
+/**
+ * 逐字段校验。设置有两个来源不受我们控制：手改过的备份文件、老版本存下的枚举值。
+ * 一个坏的 termVariant 就能让终端页在 themeOf 那儿抛 TypeError 白屏，而且已经落盘、重启照样挂。
+ */
+function cleanSettings(raw: unknown): AppSettings {
+  const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+  const int = (v: unknown, d: number, lo: number, hi: number) =>
+    typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? Math.round(v) : d;
+  const oneOf = <T extends string>(v: unknown, list: readonly T[], d: T): T => (list.includes(v as T) ? (v as T) : d);
+  const D = DEFAULT_SETTINGS;
+  return {
+    idleMinutes: int(s.idleMinutes, D.idleMinutes, 0, 24 * 60),
+    foldServers: bool(s.foldServers, D.foldServers),
+    foldDb: bool(s.foldDb, D.foldDb),
+    termScheme: typeof s.termScheme === "string" && s.termScheme ? s.termScheme : D.termScheme,
+    termFontSize: int(s.termFontSize, D.termFontSize, 8, 40),
+    termVariant: oneOf(s.termVariant, ["auto", "dark", "light"] as const, D.termVariant),
+    termDivider: bool(s.termDivider, D.termDivider),
+    hostPolicy: oneOf(s.hostPolicy, ["auto", "ask", "off"] as const, D.hostPolicy),
+    xferLanes: int(s.xferLanes, D.xferLanes, 1, 16),
+    autoReconnect: bool(s.autoReconnect, D.autoReconnect),
+    restoreTabs: bool(s.restoreTabs, D.restoreTabs),
+    updateNotice: bool(s.updateNotice, D.updateNotice),
+  };
+}
+
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    return cleanSettings(JSON.parse(raw));
   } catch {
     return DEFAULT_SETTINGS;
   }
 }
 
 export function saveSettings(settings: AppSettings): AppSettings {
+  const clean = cleanSettings(settings);
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
   } catch {}
-  return settings;
+  return clean;
 }
 
 // —— 上次开着哪些标签 ——

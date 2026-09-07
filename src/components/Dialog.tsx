@@ -58,7 +58,8 @@ export function Dialog({ title, message, input, confirmText, danger, inline, onC
                 value={value}
                 placeholder={input.placeholder}
                 onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && confirm()}
+                // 中文输入法选词那一下的 Enter 不算确认（macOS 的 WebView 会把它当普通 Enter 发过来）
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && confirm()}
               />
             </label>
           )}

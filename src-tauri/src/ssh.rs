@@ -338,12 +338,17 @@ impl Handler for ClientHandler {
                 .or_else(|| map.iter().find(|((_, port), _)| *port == connected_port).map(|(_, dest)| dest.clone()))
         });
         let Some((host, port)) = target else {
-            // 没登记过的转发不接，直接让通道断掉
+            // 没登记过的转发不接。russh 在调到这儿之前已经回了 confirm，
+            // 通道得自己关掉，不然服务器那头的连接一直挂着不断
+            let _ = channel.close().await;
             return Ok(());
         };
 
         tauri::async_runtime::spawn(async move {
-            let Ok(mut tcp) = tokio::net::TcpStream::connect((host.as_str(), port)).await else { return };
+            let Ok(mut tcp) = tokio::net::TcpStream::connect((host.as_str(), port)).await else {
+                let _ = channel.close().await;
+                return;
+            };
             let mut stream = channel.into_stream();
             let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
             let _ = tokio::io::AsyncWriteExt::shutdown(&mut tcp).await;
@@ -746,7 +751,10 @@ async fn finish(
                 current = want;
                 decoder = current.new_decoder();
             }
-            let mut out = String::with_capacity(bytes.len() * 2);
+            // decode_to_string 不会扩容，满了就把剩下的字节丢掉 —— 坏字节变成 U+FFFD 是
+            // 3 字节、单字节编码映射到 CJK 也是 3 字节，按 2× 预留会少字。按最坏情况留够。
+            let want = decoder.max_utf8_buffer_length(bytes.len()).unwrap_or(bytes.len() * 4 + 4);
+            let mut out = String::with_capacity(want);
             let _ = decoder.decode_to_string(bytes, &mut out, false);
             out
         };
@@ -801,7 +809,8 @@ pub async fn ssh_write(
         let picked = *session.encoding.lock().map_err(|_| "编码状态异常")?;
         (session.tx.clone(), picked)
     };
-    let bytes = crate::encoding::encode(&data, encoding);
+    // 表示不了的字符换成 ?：GBK 会话里粘一个 emoji 不该变成一串 &#128512;
+    let bytes = crate::encoding::encode_lossy(&data, encoding);
     tx.send(Cmd::Write(bytes)).map_err(|_| "会话已关闭".to_string())?;
     Ok(())
 }

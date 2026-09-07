@@ -151,8 +151,12 @@ function App() {
   // 拿不到就当没有，界面上什么都不会出现。
   useEffect(() => {
     if (!settings.updateNotice) { setFresh(null); return; }
-    const timer = setTimeout(() => { void checkRelease(version).then(setFresh); }, 4000);
-    return () => clearTimeout(timer);
+    // 关掉提示后已经发出去的那次请求回来了也别再弹
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void checkRelease(version).then((got) => { if (!cancelled) setFresh(got); });
+    }, 4000);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [settings.updateNotice, version]);
 
   // 标签变了就记一笔，下次开应用照着摆回来
@@ -175,6 +179,7 @@ function App() {
   useEffect(() => {
     const win = getCurrentWindow();
     let un: UnlistenFn | undefined;
+    let dead = false;
     win
       .onCloseRequested((event) => {
         const unsaved = Object.values(dirtyRef.current).filter(Boolean).length;
@@ -191,8 +196,11 @@ function App() {
           onConfirm: () => void win.destroy(),
         });
       })
-      .then((fn) => (un = fn));
-    return () => un?.();
+      .then((fn) => {
+        if (dead) fn();
+        else un = fn;
+      });
+    return () => { dead = true; un?.(); };
   }, []);
 
   // 屏蔽 webview 自带的右键菜单（重新加载 / 查看源代码），一律用我们自己的
@@ -463,15 +471,17 @@ function App() {
   const handleDeleteConn = (conn: Connection) => {
     // 有连接拿它当跳板机的话，得先说清楚 —— 删完那几条就成直连了
     const riders = connections.filter((one) => one.jumpId === conn.id);
+    // 这条连接的会话标签、挂在它底下的编辑器标签会一起关掉，没保存的得先说
+    const doomed = doomedBy(tabsRef.current.filter((tab) => tab.kind === "session" && tab.connId === conn.id).map((tab) => tab.id));
+    const unsaved = doomed.filter((id) => dirtyRef.current[id]).length;
+    const lines = ["只删本机这条记录，服务器上什么都不动。"];
+    if (riders.length) {
+      lines.push(`注意：${riders.map((one) => one.name).join("、")} 拿它当跳板机，删了会改成直连 —— 要还想走跳板，回那几条里重新指一台。`);
+    }
+    if (unsaved > 0) lines.push(`还有 ${unsaved} 个相关标签没保存（编辑器或配置页），删了改动就没了。`);
     setDialog({
       title: `删除连接「${conn.name}」`,
-      message: riders.length
-        ? `只删本机这条记录，服务器上什么都不动。
-
-注意：${riders
-            .map((one) => one.name)
-            .join("、")} 拿它当跳板机，删了会改成直连 —— 要还想走跳板，回那几条里重新指一台。`
-        : "只删本机这条记录，服务器上什么都不动。",
+      message: lines.join("\n\n"),
       confirmText: "删",
       danger: true,
       onConfirm: () => {

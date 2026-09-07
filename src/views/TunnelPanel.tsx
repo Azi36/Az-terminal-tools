@@ -61,6 +61,7 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
   useEffect(() => {
     if (!sessionId) { setLive({}); return; }
     let un: UnlistenFn | undefined;
+    let dead = false;
     listen<{ sessionId: string; id: string; state: string; active: number; message?: string }>(
       "tunnel://state",
       (event) => {
@@ -68,15 +69,23 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
         if (p.sessionId !== sessionId) return;
         setLive((old) => ({
           ...old,
-          [p.id]: {
-            on: p.state !== "closed" && p.state !== "error",
-            active: p.active,
-            error: p.state === "error" ? p.message ?? "出错了" : undefined,
-          },
+          [p.id]:
+            p.state === "conn"
+              // 连接数变了不代表隧道还开着：停掉之后还在收尾的连接也会报这个，别把它翻回「开着」
+              ? { on: old[p.id]?.on ?? false, active: p.active, error: old[p.id]?.error }
+              : {
+                  on: p.state !== "closed" && p.state !== "error",
+                  active: p.active,
+                  error: p.state === "error" ? p.message ?? "出错了" : undefined,
+                },
         }));
       },
-    ).then((fn) => (un = fn));
-    return () => un?.();
+    ).then((fn) => {
+      // 监听还没挂好组件就卸了（StrictMode 必现，快速切会话也会）：挂好的那一下立刻卸掉
+      if (dead) fn();
+      else un = fn;
+    });
+    return () => { dead = true; un?.(); };
   }, [sessionId]);
 
   // 换了会话（比如重连）→ 问一遍引擎现在到底开着哪些，别让界面显示得比实际乐观
@@ -133,6 +142,9 @@ export function TunnelPanel({ sessionId, tunnels, onChange, onActivity }: Tunnel
     const known = tunnels.some((old) => old.id === one.id);
     onChange(known ? tunnels.map((old) => (old.id === one.id ? one : old)) : [...tunnels, one]);
     setEditing(null);
+    // 正开着的隧道改了配置：引擎里跑的还是旧的那套端口，得停了按新的再开，
+    // 不然列表显示 9090 实际还在转 8080
+    if (live[one.id]?.on) void stop(one).then(() => start(one));
   };
 
   const remove = (one: Tunnel) => {
