@@ -16,6 +16,7 @@ export type AppAction =
   | "prevTab"
   | "nthTab"
   | "settings"
+  | "sidebar"
   | "page";
 
 /** 给人看的写法 */
@@ -27,6 +28,7 @@ export const SHORTCUTS = {
   prevTab: "Ctrl+Shift+Tab",
   nthTab: "Alt+1…9",
   settings: "Ctrl+Shift+,",
+  sidebar: "Ctrl+Shift+B",
 } as const;
 
 /** 会话标签里的几页，按工具条上的顺序 1..5 */
@@ -84,6 +86,7 @@ export function matchShortcut(e: KeyLike): Matched | null {
   if (key === "p") return { action: "palette" };
   if (key === "t") return { action: "newConn" };
   if (key === "w") return { action: "closeTab" };
+  if (key === "b") return { action: "sidebar" };
   if (e.code === "Comma" || e.key === "," || e.key === "<") return { action: "settings" };
   const page = digitOf(e);
   if (page && page <= PAGE_ORDER.length) return { action: "page", page: PAGE_ORDER[page - 1] };
@@ -128,6 +131,7 @@ export const SHORTCUT_GROUPS: { title: string; items: { keys: string; what: stri
     items: [
       { keys: SHORTCUTS.palette, what: "命令面板" },
       { keys: SHORTCUTS.settings, what: "设置" },
+      { keys: SHORTCUTS.sidebar, what: "收起 / 展开侧栏" },
     ],
   },
   {

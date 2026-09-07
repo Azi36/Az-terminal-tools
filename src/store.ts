@@ -124,6 +124,8 @@ export interface AppSettings {
   restoreTabs: boolean;
   /** 开起来之后顺手问一句「有没有新版」（只发一个 GET，不带身份不上报） */
   updateNotice: boolean;
+  /** 侧栏收成一条图标栏；内容点图标时以浮层弹出 */
+  sideCollapsed: boolean;
   /** 全局热键：不在前台也能把窗口叫出来。空字符串 = 不用 */
   hotkey: string;
   /** WebDAV 同步：文件的完整地址；空 = 没配 */
@@ -152,6 +154,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoReconnect: true,
   restoreTabs: true,
   updateNotice: true,
+  sideCollapsed: false,
 };
 
 /**
@@ -183,6 +186,7 @@ function cleanSettings(raw: unknown): AppSettings {
     autoReconnect: bool(s.autoReconnect, D.autoReconnect),
     restoreTabs: bool(s.restoreTabs, D.restoreTabs),
     updateNotice: bool(s.updateNotice, D.updateNotice),
+    sideCollapsed: bool(s.sideCollapsed, D.sideCollapsed),
   };
 }
 

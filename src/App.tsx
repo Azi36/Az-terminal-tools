@@ -4,14 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Logo } from "./components/Logo";
 import {
-  IconChevronDown,
-  IconChevronRight,
-  IconCommand,
-  IconDatabase,
-  IconNote,
-  IconPlus,
-  IconServer,
-  IconSettings,
+  IconChevronDown, IconChevronRight, IconCommand, IconDatabase, IconNote, IconPlus, IconServer, IconSettings, IconArrowLeft, IconX,
 } from "./components/icons";
 import { ConnectionList, type ConnStatus } from "./components/ConnectionList";
 import { SnippetPanel } from "./components/SnippetPanel";
@@ -111,24 +104,8 @@ function App() {
   const [wakes, setWakes] = useState<Record<string, Wake>>({});
 
   const [dialog, setDialog] = useState<DialogSpec | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({
-    idleMinutes: 0,
-    hotkey: "",
-    syncUrl: "",
-    syncUser: "",
-    syncedAt: 0,
-    foldServers: false,
-    foldDb: true,
-    termScheme: "az",
-    termFontSize: 13,
-    termVariant: "auto",
-    termDivider: true,
-    hostPolicy: "auto",
-    xferLanes: 3,
-    autoReconnect: true,
-    restoreTabs: true,
-    updateNotice: true,
-  });
+  // 初值直接从落盘的那份读（没有就是 cleanSettings 给的默认值），别在这儿再抄一份默认值
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
   /** 界面此刻实际是深还是浅（system 模式也算出来），终端「跟随界面」靠它 */
   const [uiVariant, setUiVariant] = useState<"dark" | "light">("dark");
   /** 后端说有新版了；null = 没有或者没查到 */
@@ -298,6 +275,10 @@ function App() {
         case "settings":
           e.preventDefault();
           openSettings();
+          return;
+        case "sidebar":
+          e.preventDefault();
+          toggleSide();
           return;
         case "page":
           // 只在会话标签里有意义；别的标签上按了就当没按
@@ -560,6 +541,116 @@ function App() {
     if (list.some((tab) => sessions[tab.id])) return "live";
     return list.length > 0 ? "down" : "idle";
   }, [tabs, sessions]);
+
+  // —— 侧栏收缩 ——
+  // 收成一条图标栏后，点哪个图标就把那个抽屉当浮层弹在旁边；打开 / 切换标签、点外面、Esc 都收起。
+  /** 收缩状态下弹出来的是哪个抽屉；null = 没弹 */
+  const [peek, setPeek] = useState<Drawer | null>(null);
+  const collapsed = settings.sideCollapsed;
+  const toggleSide = () => {
+    setPeek(null);
+    changeSettings({ sideCollapsed: !settings.sideCollapsed });
+  };
+  useEffect(() => {
+    if (!peek) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPeek(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [peek]);
+  // 浮层里点了连接 / 备忘 / 指令，标签一动就收起来，别挡着刚打开的东西
+  useEffect(() => { setPeek(null); }, [activeTab, wakes, tabs.length]);
+
+  const DRAWERS: { id: Drawer; label: string; title: string; icon: React.ReactNode }[] = [
+    { id: "conns", label: "连接", title: "服务器和数据库", icon: <IconServer size={14} /> },
+    { id: "snippets", label: "指令", title: "常用指令", icon: <IconCommand size={14} /> },
+    { id: "notes", label: "备忘", title: "备忘录", icon: <IconNote size={14} /> },
+  ];
+
+  /** 每个抽屉顶上的主操作 */
+  const drawerAction = (which: Drawer) =>
+    which === "conns" ? (
+      <button className="new-conn" type="button" onClick={openNewConn} title="加一台服务器">
+        <IconPlus size={15} />新建连接
+      </button>
+    ) : which === "snippets" ? (
+      <button
+        className="new-conn"
+        type="button"
+        title="自己写一条"
+        onClick={() => window.dispatchEvent(new CustomEvent("az-term:new-snippet"))}
+      >
+        <IconPlus size={15} />存条指令
+      </button>
+    ) : (
+      <button className="new-conn" type="button" onClick={newNote} title="记一条">
+        <IconPlus size={15} />新备忘
+      </button>
+    );
+
+  /** 抽屉正文：展开时摆在侧栏里，收缩时摆进浮层，同一份 */
+  const drawerBody = (which: Drawer) =>
+    which === "conns" ? (
+      <div className="drawer">
+        <button
+          className="kind-head"
+          type="button"
+          onClick={() => changeSettings({ foldServers: !settings.foldServers })}
+          title={settings.foldServers ? "展开" : "折起来"}
+        >
+          {settings.foldServers ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
+          <IconServer size={13} /> 服务器
+          <span className="kind-count">{connections.length}</span>
+        </button>
+
+        {!settings.foldServers && (
+          connections.length === 0 ? (
+            <p className="sidebar-empty">还没有连接。第一台服务器，从这里开始。</p>
+          ) : (
+            <ConnectionList
+              connections={connections}
+              statusOf={statusOf}
+              inspectingId={inspectingId}
+              onInspect={openConnConfig}
+              onOpen={openConn}
+              onOpenAnother={openAnother}
+              onOpenFiles={openConnFiles}
+              onEdit={openConnEdit}
+              onDelete={handleDeleteConn}
+              onTogglePin={togglePin}
+            />
+          )
+        )}
+
+        {/* 数据库、Redis、API 以后落在这一栏，先把位置留出来 */}
+        <button
+          className="kind-head soon"
+          type="button"
+          onClick={() => changeSettings({ foldDb: !settings.foldDb })}
+          title={settings.foldDb ? "展开" : "折起来"}
+        >
+          {settings.foldDb ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
+          <IconDatabase size={13} /> 数据库
+          <span className="kind-count">排队中</span>
+        </button>
+        {!settings.foldDb && <p className="sidebar-empty">MySQL · Redis · API 调试，还没轮到。</p>}
+      </div>
+    ) : which === "snippets" ? (
+      <SnippetPanel
+        snippets={snippets}
+        canSend={!!activeSession}
+        onSave={(snippet) => setSnippets(saveSnippet(snippet))}
+        onImport={importSnippets}
+        onDelete={handleDeleteSnippet}
+        onSend={sendCommand}
+      />
+    ) : (
+      <NotePanel
+        notes={notes}
+        openNoteIds={openNoteIds}
+        onOpen={openNote}
+        onDelete={handleDeleteNote}
+      />
+    );
 
   /** 终端右键菜单里应用级的那几条：跟快捷键一一对应，菜单上写着键位，不用背 */
   const appMenuFor = (tabId: string): MenuEntry[] => [
@@ -861,6 +952,7 @@ function App() {
       { id: "act:new", group: "动作", label: "新建连接", hint: SHORTCUTS.newConn, run: openNewConn },
       { id: "act:note", group: "动作", label: "新建备忘", run: newNote },
       { id: "act:settings", group: "动作", label: "设置", hint: SHORTCUTS.settings, run: openSettings },
+      { id: "act:side", group: "动作", label: settings.sideCollapsed ? "展开侧栏" : "收起侧栏", hint: SHORTCUTS.sidebar, run: toggleSide },
       {
         id: "act:theme",
         group: "动作",
@@ -886,115 +978,70 @@ function App() {
   const liveCount = Object.values(sessions).filter(Boolean).length;
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        {/* 主操作钉在最上面，跟着当前抽屉变 */}
-        <div className="sidebar-top">
-          {drawer === "conns" && (
-            <button className="new-conn" type="button" onClick={openNewConn} title="加一台服务器">
-              <IconPlus size={15} />新建连接
-            </button>
-          )}
-          {drawer === "snippets" && (
-            <button
-              className="new-conn"
-              type="button"
-              title="自己写一条"
-              onClick={() => window.dispatchEvent(new CustomEvent("az-term:new-snippet"))}
-            >
-              <IconPlus size={15} />存条指令
-            </button>
-          )}
-          {drawer === "notes" && (
-            <button className="new-conn" type="button" onClick={newNote} title="记一条">
-              <IconPlus size={15} />新备忘
-            </button>
-          )}
-        </div>
-
-        <div className="drawer-switch" role="tablist">
-          <button type="button" role="tab" aria-selected={drawer === "conns"} title="服务器和数据库"
-            className={drawer === "conns" ? "on" : ""} onClick={() => setDrawer("conns")}>
-            <IconServer size={14} />连接
-          </button>
-          <button type="button" role="tab" aria-selected={drawer === "snippets"} title="常用指令"
-            className={drawer === "snippets" ? "on" : ""} onClick={() => setDrawer("snippets")}>
-            <IconCommand size={14} />指令
-          </button>
-          <button type="button" role="tab" aria-selected={drawer === "notes"} title="备忘录"
-            className={drawer === "notes" ? "on" : ""} onClick={() => setDrawer("notes")}>
-            <IconNote size={14} />备忘
-          </button>
-        </div>
-
-        <div className="sidebar-section">
-          {drawer === "conns" && (
-            <div className="drawer">
-              <button
-                className="kind-head"
-                type="button"
-                onClick={() => changeSettings({ foldServers: !settings.foldServers })}
-                title={settings.foldServers ? "展开" : "折起来"}
-              >
-                {settings.foldServers ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
-                <IconServer size={13} /> 服务器
-                <span className="kind-count">{connections.length}</span>
+    <div className={`shell ${collapsed ? "collapsed" : ""}`}>
+      <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
+        {collapsed ? (
+          <>
+            {/* 图标栏：新建、三个抽屉、设置、展开 */}
+            <div className="sidebar-top">
+              <button className="new-conn rail-btn" type="button" onClick={openNewConn} aria-label="新建连接" title={`新建连接 · ${SHORTCUTS.newConn}`}>
+                <IconPlus size={16} />
               </button>
-
-              {!settings.foldServers && (
-                connections.length === 0 ? (
-                  <p className="sidebar-empty">还没有连接。第一台服务器，从这里开始。</p>
-                ) : (
-                  <ConnectionList
-                    connections={connections}
-                    statusOf={statusOf}
-                    inspectingId={inspectingId}
-                    onInspect={openConnConfig}
-                    onOpen={openConn}
-                    onOpenAnother={openAnother}
-                    onOpenFiles={openConnFiles}
-                    onEdit={openConnEdit}
-                    onDelete={handleDeleteConn}
-                    onTogglePin={togglePin}
-                  />
-                )
-              )}
-
-              {/* 数据库、Redis、API 以后落在这一栏，先把位置留出来 */}
-              <button
-                className="kind-head soon"
-                type="button"
-                onClick={() => changeSettings({ foldDb: !settings.foldDb })}
-                title={settings.foldDb ? "展开" : "折起来"}
-              >
-                {settings.foldDb ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
-                <IconDatabase size={13} /> 数据库
-                <span className="kind-count">排队中</span>
-              </button>
-              {!settings.foldDb && <p className="sidebar-empty">MySQL · Redis · API 调试，还没轮到。</p>}
             </div>
-          )}
+            <div className="drawer-switch" role="tablist">
+              {DRAWERS.map((one) => (
+                <button
+                  key={one.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={peek === one.id}
+                  aria-label={one.label}
+                  title={one.title}
+                  className={peek === one.id ? "on" : ""}
+                  onClick={() => setPeek((now) => (now === one.id ? null : one.id))}
+                >
+                  {one.icon}
+                </button>
+              ))}
+            </div>
+            <div className="sidebar-section" />
+            <footer className="sidebar-foot">
+              <span className="engine-dot" data-ok={engineStatus.includes("ok")} title={engineStatus} />
+              {fresh && (
+                <button className="foot-btn foot-new-mini" type="button" onClick={openSettings} title={`${fresh.version} 可以更新了`}>
+                  <span className="foot-new-dot" />
+                </button>
+              )}
+              <button className="foot-btn" type="button" onClick={openSettings} aria-label="设置" title={`设置 · ${SHORTCUTS.settings}`}>
+                <IconSettings />
+              </button>
+              <button className="foot-btn" type="button" onClick={toggleSide} aria-label="展开侧栏" title={`展开侧栏 · ${SHORTCUTS.sidebar}`}>
+                <IconChevronRight />
+              </button>
+            </footer>
+          </>
+        ) : (
+          <>
+            {/* 主操作钉在最上面，跟着当前抽屉变 */}
+            <div className="sidebar-top">{drawerAction(drawer)}</div>
 
-          {drawer === "snippets" && (
-            <SnippetPanel
-              snippets={snippets}
-              canSend={!!activeSession}
-              onSave={(snippet) => setSnippets(saveSnippet(snippet))}
-              onImport={importSnippets}
-              onDelete={handleDeleteSnippet}
-              onSend={sendCommand}
-            />
-          )}
+            <div className="drawer-switch" role="tablist">
+              {DRAWERS.map((one) => (
+                <button
+                  key={one.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={drawer === one.id}
+                  title={one.title}
+                  className={drawer === one.id ? "on" : ""}
+                  onClick={() => setDrawer(one.id)}
+                >
+                  {one.icon}{one.label}
+                </button>
+              ))}
+            </div>
 
-          {drawer === "notes" && (
-            <NotePanel
-              notes={notes}
-              openNoteIds={openNoteIds}
-              onOpen={openNote}
-              onDelete={handleDeleteNote}
-            />
-          )}
-        </div>
+            <div className="sidebar-section">{drawerBody(drawer)}</div>
 
         <footer className="sidebar-foot">
           {/* 有新版就在这儿挂一条，不弹窗打断 —— 点了才去设置里更新 */}
@@ -1015,11 +1062,31 @@ function App() {
             </>
           )}
           <span className="foot-spacer" />
-          <button className="foot-btn" type="button" onClick={openSettings} aria-label="设置" title="设置">
+          <button className="foot-btn" type="button" onClick={openSettings} aria-label="设置" title={`设置 · ${SHORTCUTS.settings}`}>
             <IconSettings />
           </button>
+          <button className="foot-btn" type="button" onClick={toggleSide} aria-label="收起侧栏" title={`收起侧栏 · ${SHORTCUTS.sidebar}`}>
+            <IconArrowLeft />
+          </button>
         </footer>
+          </>
+        )}
       </aside>
+
+      {/* 收缩态的浮层：内容和展开时那一栏是同一份 */}
+      {collapsed && peek && (
+        <>
+          <div className="side-pop-backdrop" onMouseDown={() => setPeek(null)} />
+          <div className="side-pop" role="dialog" aria-label={DRAWERS.find((one) => one.id === peek)?.title}>
+            <div className="side-pop-head">
+              <b>{DRAWERS.find((one) => one.id === peek)?.title}</b>
+              {drawerAction(peek)}
+              <button className="icon-btn sm" type="button" onClick={() => setPeek(null)} aria-label="收起"><IconX size={14} /></button>
+            </div>
+            <div className="side-pop-body">{drawerBody(peek)}</div>
+          </div>
+        </>
+      )}
 
       <main className="workspace">
         <TabBar

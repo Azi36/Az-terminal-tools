@@ -1887,3 +1887,34 @@ body.dragging-split .split-grip { background: var(--brand); }
 
 /* 日志查看器：从搜索结果跳过来的那一行 */
 .log-text .log-mark { background: color-mix(in srgb, var(--warn) 22%, transparent); box-shadow: inset 3px 0 0 var(--warn); }
+
+/* ---------- 侧栏收缩：一条图标栏 + 弹出的浮层 ---------- */
+.shell.collapsed { grid-template-columns: 52px 1fr; }
+/* 图标栏要压在浮层的遮罩上面，点另一个图标才能直接切换 */
+.sidebar.collapsed { position: relative; z-index: 91; }
+.sidebar.collapsed .sidebar-top { padding: 12px 8px; }
+.new-conn.rail-btn { width: 36px; min-height: 36px; padding: 0; border-radius: 10px; }
+.sidebar.collapsed .drawer-switch { flex-direction: column; gap: 4px; padding: 8px; }
+.sidebar.collapsed .drawer-switch button { flex: none; padding: 10px 0; }
+.sidebar.collapsed .drawer-switch button svg { width: 16px; height: 16px; }
+.sidebar.collapsed .sidebar-section { padding: 0; }
+.sidebar.collapsed .sidebar-foot { flex-direction: column; gap: 6px; padding: 10px 8px 12px; }
+.sidebar.collapsed .foot-btn { padding: 7px; }
+.foot-new-mini .foot-new-dot { margin: 0; }
+
+.side-pop-backdrop { position: fixed; inset: 0; z-index: 89; }
+.side-pop {
+  position: fixed; left: 52px; top: 0; bottom: 0; width: 300px; z-index: 90;
+  display: flex; flex-direction: column;
+  background: var(--bg-soft); border-right: 1px solid var(--border);
+  box-shadow: 10px 0 30px color-mix(in srgb, #000 22%, transparent);
+  animation: side-pop-in .16s var(--ease);
+}
+@keyframes side-pop-in { from { transform: translateX(-10px); opacity: 0; } to { transform: none; opacity: 1; } }
+.side-pop-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--border);
+}
+.side-pop-head b { flex: 1; font-size: 13px; }
+.side-pop-head .new-conn { width: auto; min-height: 30px; padding: 0 10px; font-size: 12px; }
+.side-pop-body { flex: 1; overflow-y: auto; padding: 14px; }
