@@ -78,11 +78,11 @@ fn pick_shell(wanted: Option<&str>) -> String {
 }
 
 fn shell_kind(shell: &str) -> &'static str {
-    let stem = std::path::Path::new(shell)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    match stem.as_str() {
+    // 自己按 / 和 \ 切最后一段：Path::file_stem 在 macOS / Linux 上不认反斜杠，
+    // 用户在设置里填的 Windows 路径会整串当成文件名（CI 的 macOS 测试就是这么挂的）
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell).trim().to_ascii_lowercase();
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    match stem {
         "pwsh" | "powershell" => "powershell",
         "bash" => "bash",
         "zsh" => "zsh",
